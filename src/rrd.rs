@@ -20,7 +20,7 @@
 //! | `world/traffic_lights/states` | the state changes, `TextLog` |
 //! | `conditions/<role>/<index>` | 1 while a pass/fail condition is satisfied, 0 while not (`condition` records, carried forward) |
 //! | `scenario/progress` | running, then the verdict (`StateChange`, for the state timeline view) |
-//! | `scenario/conditions/<role>/<index>` | satisfied / not satisfied, from the `condition` records (`StateChange`) |
+//! | `scenario/conditions/<role>/<index>_<label>` | satisfied / not satisfied, from the `condition` records (`StateChange`) |
 //! | `scenario/traffic_lights/<id>` | each light's state over time (`StateChange`) |
 //! | `result`, `result/log`, `result/passed` | the verdict |
 //! | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
@@ -849,6 +849,26 @@ fn write_progress(w: &mut Writer, ticks: &Ticks, result: Option<&g::ResultRecord
     )
 }
 
+/// A condition's lane, named after it (the view names a lane by its entity
+/// path): `scenario/conditions/pass/0_reached_goal`. What a path part would
+/// have to escape (spaces, brackets) becomes `_`.
+fn condition_lane(role: &str, index: u64, label: &str) -> String {
+    let mut name = index.to_string();
+    let mut gap = true;
+    for c in label.chars() {
+        if c.is_alphanumeric() || matches!(c, '-' | '.') {
+            if gap {
+                name.push('_');
+            }
+            name.push(c);
+            gap = false;
+        } else {
+            gap = true;
+        }
+    }
+    format!("scenario/conditions/{role}/{name}")
+}
+
 /// Each pass/fail condition's state as the run checked it: a pass condition
 /// satisfied is green, a fail condition satisfied red.
 fn write_condition_states(
@@ -880,14 +900,10 @@ fn write_condition_states(
         }
         write_states(
             w,
-            &format!("scenario/conditions/{role}/{index}"),
+            &condition_lane(role, *index, label),
             &[
-                ("satisfied", format!("satisfied: {label}"), satisfied),
-                (
-                    "not_satisfied",
-                    format!("not satisfied: {label}"),
-                    UNSATISFIED_COLOR,
-                ),
+                ("satisfied", "satisfied".into(), satisfied),
+                ("not_satisfied", "not satisfied".into(), UNSATISFIED_COLOR),
             ],
             &frames,
             &times,
@@ -976,4 +992,22 @@ fn write_map(w: &mut Writer, map: &MapLayer<'_>) -> RrResult<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::condition_lane;
+
+    #[test]
+    fn condition_lanes_are_named_after_their_conditions() {
+        assert_eq!(
+            condition_lane("pass", 0, "reached_goal"),
+            "scenario/conditions/pass/0_reached_goal"
+        );
+        assert_eq!(
+            condition_lane("fail", 2, "  ego stopped (in zone) AND green "),
+            "scenario/conditions/fail/2_ego_stopped_in_zone_AND_green"
+        );
+        assert_eq!(condition_lane("pass", 1, ""), "scenario/conditions/pass/1");
+    }
 }

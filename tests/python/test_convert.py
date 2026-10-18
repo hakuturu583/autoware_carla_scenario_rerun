@@ -183,13 +183,13 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
         column = f"/scenario/{entity}:StateChange:state"
         return [(f, c[0]) for f, c in zip(scenario["frame"], scenario[column]) if c is not None]
     assert states("progress") == [(100, "running"), (139, "passed")]
-    assert states("conditions/pass/0") == [(100, "not_satisfied"), (130, "satisfied")]
-    assert states("conditions/fail/0") == [(100, "not_satisfied")]
+    # A condition's lane is named after it.
+    assert states("conditions/pass/0_reached_goal") == [(100, "not_satisfied"), (130, "satisfied")]
+    assert states("conditions/fail/0_collision") == [(100, "not_satisfied")]
     assert states("traffic_lights/9") == [(100, "Red"), (125, "Green")]
-    style = read_rrd(out, "/scenario/conditions/pass/0", index=None)
-    assert list(style["/scenario/conditions/pass/0:StateConfiguration:labels"][0]) == [
-        "satisfied: reached_goal", "not satisfied: reached_goal",
-    ]
+    style = read_rrd(out, "/scenario/conditions/pass/0_reached_goal", index=None)
+    labels = style["/scenario/conditions/pass/0_reached_goal:StateConfiguration:labels"][0]
+    assert list(labels) == ["satisfied", "not satisfied"]
     assert "PASSED" in cells(result, "/result/log:TextLog:text")[0][0]
 
     path = read_rrd(out, "/world/ego/driven_path", index=None)
