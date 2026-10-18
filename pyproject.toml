@@ -1,0 +1,53 @@
+[build-system]
+requires = ["maturin>=1.9,<2"]
+build-backend = "maturin"
+
+[project]
+name = "autoware-carla-scenario-rerun"
+# From Cargo.toml (tools/bump_version.py moves it).
+dynamic = ["version"]
+description = "Convert autoware_carla_scenario trajectory logs (*.trajectory.jsonl) into Rerun recordings (.rrd)"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Masaya Kataoka", email = "ms.kataoka@gmail.com" }]
+requires-python = ">=3.10"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Rust",
+    "Operating System :: POSIX :: Linux",
+    "Topic :: Scientific/Engineering",
+]
+# Converting needs nothing else; viewing a recording needs the viewer of the
+# same Rerun minor version (the `viewer` extra).
+dependencies = []
+
+[project.optional-dependencies]
+viewer = ["rerun-sdk>=0.38.1,<0.39"]
+
+[project.urls]
+Repository = "https://github.com/hakuturu583/autoware_carla_scenario_rerun"
+
+[dependency-groups]
+test = [
+    "pytest>=8",
+    # Reads the recordings back (the dataframe API) in the tests; the same
+    # minor version as the `rerun` crate the converter writes with.
+    # (`catalog`: the local server and datafusion the dataframe API reads with.)
+    "rerun-sdk[catalog]>=0.38.1,<0.39",
+    "jsonschema>=4.20",
+]
+
+[tool.maturin]
+features = ["python"]
+python-source = "python"
+module-name = "autoware_carla_scenario_rerun._native"
+# Only the converter: the xtask crate is a development tool.
+manifest-path = "Cargo.toml"
+include = [{ path = "LICENSE", format = "sdist" }]
+# Smaller wheels: no symbols.
+strip = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests/python"]
