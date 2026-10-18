@@ -129,6 +129,8 @@ def test_v1_log(v1_log: Path, tmp_path: Path, read_rrd, rrd_columns) -> None:
     tags = cells(lights, "/world/traffic_lights/tags:Points3D:labels")
     assert list(tags[0]) == [f"{r['id']} Red" for r in light_records]
     assert list(tags[-1]) == [f"{r['id']} Green" for r in light_records]
+    tag_colors = cells(lights, "/world/traffic_lights/tags:Points3D:colors")
+    assert set(tag_colors[0].tolist()) == {red} and set(tag_colors[-1].tolist()) == {green}
 
     # Each light's state for the state timeline view; the run fails at its end.
     scenario = read_rrd(out, "/scenario/**")

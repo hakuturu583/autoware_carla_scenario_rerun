@@ -18,7 +18,7 @@
 //! | `ego/speed_mps`, `ego/control` | the ego's speed, and throttle/steer/brake (`Scalars`) |
 //! | `world/traffic_lights` | the light heads, wireframe boxes (static) |
 //! | `world/traffic_lights/bulbs` | three bulbs per head (red, yellow, green), the one the state names lit |
-//! | `world/traffic_lights/tags` | each light's id and state, written above it |
+//! | `world/traffic_lights/tags` | each light's id and state, written above it in the light's colour |
 //! | `world/traffic_lights/stops` | their stop-line waypoints (static `Points3D`) |
 //! | `world/traffic_lights/states` | the state changes, `TextLog` |
 //! | `conditions/<role>/<index>` | 1 while a pass/fail condition is satisfied, 0 while not (`condition` records, carried forward) |
@@ -654,12 +654,12 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
             &Points3D::new(bulbs).with_radii(bulb_radii),
         )?;
     }
-    // Where each light's id and state is written (the labels change with it).
+    // Where each light's id and state is written; the text and its colour
+    // (the light's) change with the state.
     w.fixed(
         "world/traffic_lights/tags",
         &Points3D::new(tags)
             .with_radii([0.05])
-            .with_colors([rgb(STOP_LINE_COLOR)])
             .with_show_labels(true),
     )?;
     if !stops.is_empty() {
@@ -673,8 +673,9 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
     }
     let total: usize = heads.iter().map(|(_, n)| n).sum();
     let mut state: HashMap<u32, LightState> = HashMap::new();
-    let (mut frames, mut times, mut colors, mut labels, mut texts) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut frames, mut times, mut colors, mut texts) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut labels, mut label_colors) = (Vec::new(), Vec::new());
     let mut k = 0;
     while k < ticks.lights.len() {
         let tick = ticks.lights[k].tick;
@@ -693,6 +694,7 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
                 colors.extend(bulb_colors(s));
             }
             labels.push(format!("{id} {s}"));
+            label_colors.push(light_color(s));
         }
         texts.push(changed.join(", "));
     }
@@ -705,6 +707,7 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
     }
     let columns = Points3D::update_fields()
         .with_labels(labels)
+        .with_colors(label_colors)
         .columns(std::iter::repeat_n(heads.len(), frames.len()))
         .map_err(err)?;
     w.columns("world/traffic_lights/tags", &frames, &times, columns)?;
