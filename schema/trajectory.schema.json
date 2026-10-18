@@ -1,0 +1,834 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:autoware-carla-scenario:schemas:trajectory",
+  "title": "TrajectoryRecord",
+  "description": "One line of a run's `{stem}.trajectory.jsonl`, written by `autoware_carla_scenario.trajectory_recorder.TrajectoryRecorder`, format version 2: one of ten records, told apart by `type`. Units, frames and the order of a file: docs/trajectory_log.md.",
+  "x-schema-version": 2,
+  "oneOf": [
+    {
+      "$ref": "#/$defs/WorldRecord"
+    },
+    {
+      "$ref": "#/$defs/MapRecord"
+    },
+    {
+      "$ref": "#/$defs/TrafficLightRecord"
+    },
+    {
+      "$ref": "#/$defs/WarmupRecord"
+    },
+    {
+      "$ref": "#/$defs/ActorRecord"
+    },
+    {
+      "$ref": "#/$defs/ActorGoneRecord"
+    },
+    {
+      "$ref": "#/$defs/TickRecord"
+    },
+    {
+      "$ref": "#/$defs/MarkersRecord"
+    },
+    {
+      "$ref": "#/$defs/ConditionRecord"
+    },
+    {
+      "$ref": "#/$defs/ResultRecord"
+    }
+  ],
+  "discriminator": {
+    "propertyName": "type",
+    "mapping": {
+      "world": "#/$defs/WorldRecord",
+      "map": "#/$defs/MapRecord",
+      "traffic_light": "#/$defs/TrafficLightRecord",
+      "warmup": "#/$defs/WarmupRecord",
+      "actor": "#/$defs/ActorRecord",
+      "actor_gone": "#/$defs/ActorGoneRecord",
+      "tick": "#/$defs/TickRecord",
+      "markers": "#/$defs/MarkersRecord",
+      "condition": "#/$defs/ConditionRecord",
+      "result": "#/$defs/ResultRecord"
+    }
+  },
+  "$defs": {
+    "WorldRecord": {
+      "title": "WorldRecord",
+      "description": "The first line of the file: the world the run recorded.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "world"
+        },
+        "schema_version": {
+          "description": "The version of this format the file was written in: 2 (the records `map`, `warmup`, `actor_gone`, `markers`, `condition` and `result` were added in it). Absent from files of version 1, which have only `world`, `traffic_light`, `actor` and `tick` records.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "map": {
+          "description": "The CARLA map's name, e.g. \"Carla/Maps/Town10HD_Opt\".",
+          "type": "string"
+        },
+        "episode": {
+          "description": "The CARLA episode id (`world.id`): a random uint64 in LibCarla, so up to 2^64 - 1 -- past what a double holds exactly: read it as a 64-bit unsigned integer (JavaScript: a BigInt-aware parser). It only tells episodes apart.",
+          "$ref": "#/$defs/UInt64"
+        }
+      },
+      "required": [
+        "type",
+        "map",
+        "episode"
+      ],
+      "additionalProperties": false
+    },
+    "MapRecord": {
+      "title": "MapRecord",
+      "description": "The map files the run read, written once, right after `world` (version 2). Each file is named and hashed, so a reader can find the very map the run was on and tell it from another; a field is null when the run had none.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "map"
+        },
+        "name": {
+          "description": "The CARLA map the runs load, its short name (e.g. \"Town10HD_Opt\").",
+          "type": "string"
+        },
+        "source": {
+          "description": "Where the map came from, as the run's `map.source` named it (e.g. \"git+https://huggingface.co/datasets/OWNER/NAME@REV#PATH\"), or `map.directory`; null when the config named neither.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "lanelet2": {
+          "description": "The Lanelet2 map (.osm) the run read, or null when it read none.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "opendrive": {
+          "description": "The OpenDRIVE (.xodr) the run read its road network from, or null.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/FileRef"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "projector_info": {
+          "description": "The Lanelet2 map's `map_projector_info.yaml`, as read (e.g. {\"projector_type\": \"MGRS\", \"vertical_datum\": \"WGS84\", \"mgrs_grid\": \"54SUE\"}); null when the map has none.",
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "projector_type": {
+          "description": "The projection the Lanelet2 map was read with when the config overrode it (`map.projector_type`), else null: then `projector_info` decides.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "mgrs_offset": {
+          "description": "[ox, oy]: the offset from CARLA's world frame to the Lanelet2 map frame, metres: x_map = x + ox, y_map = -y + oy (docs/trajectory_log.md). Null when no Lanelet2 map was loaded.",
+          "anyOf": [
+            {
+              "description": "[ox, oy], metres.",
+              "type": "array",
+              "prefixItems": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "number"
+                }
+              ],
+              "items": false,
+              "minItems": 2
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "z_offset": {
+          "description": "The Lanelet2 map's elevation over CARLA's: z_map = z + z_offset, metres. Null when no Lanelet2 map was loaded.",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "name",
+        "source",
+        "lanelet2",
+        "opendrive",
+        "projector_info",
+        "projector_type",
+        "mgrs_offset",
+        "z_offset"
+      ],
+      "additionalProperties": false
+    },
+    "TrafficLightRecord": {
+      "title": "TrafficLightRecord",
+      "description": "A traffic light of the world, written once when recording starts.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "traffic_light"
+        },
+        "id": {
+          "$ref": "#/$defs/ActorId"
+        },
+        "opendrive_id": {
+          "description": "The light's signal id in the OpenDRIVE map; empty when CARLA could not tell.",
+          "type": "string"
+        },
+        "location": {
+          "description": "The light actor's location in the world frame.",
+          "$ref": "#/$defs/Vector3"
+        },
+        "boxes": {
+          "description": "One box per light head. May be empty when CARLA could not tell.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LightBox"
+          }
+        },
+        "stops": {
+          "description": "The waypoints of the light's stop lines. May be empty when CARLA could not tell.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/StopWaypoint"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "opendrive_id",
+        "location",
+        "boxes",
+        "stops"
+      ],
+      "additionalProperties": false
+    },
+    "WarmupRecord": {
+      "title": "WarmupRecord",
+      "description": "Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording (and the video rendered from it) starts `ticks` frames earlier.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "warmup"
+        },
+        "ticks": {
+          "description": "How many world ticks the warm-up took, from the CARLA recorder's start to the scenario clock's: the first `ticks` frames of the recording (the video's frames captioned as warm-up).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "start_frame": {
+          "description": "The CARLA frame the recorder started at, or null when the run made no CARLA recording (then `ticks` is 0).",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/SafeUInt"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "end_frame": {
+          "description": "The CARLA frame the scenario clock started at: the frame of the first tick record, at t = 0.",
+          "$ref": "#/$defs/SafeUInt"
+        }
+      },
+      "required": [
+        "type",
+        "ticks",
+        "start_frame",
+        "end_frame"
+      ],
+      "additionalProperties": false
+    },
+    "ActorRecord": {
+      "title": "ActorRecord",
+      "description": "A vehicle or walker, written right before the first tick it appears in: the ones there when recording starts, and every one spawned later. `actor_gone` says when it went.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "actor"
+        },
+        "id": {
+          "$ref": "#/$defs/ActorId"
+        },
+        "type_id": {
+          "description": "The CARLA blueprint id; starts with \"vehicle.\" or \"walker.\".",
+          "type": "string",
+          "pattern": "^(vehicle|walker)\\."
+        },
+        "role": {
+          "description": "The actor's `role_name` attribute as set, case kept; empty when unset. \"ego\" or \"hero\" (any case) marks an ego, whose control inputs ticks carry.",
+          "type": "string"
+        },
+        "extent": {
+          "description": "The bounding box's half size (x forward, y right, z up), metres.",
+          "$ref": "#/$defs/Vector3"
+        },
+        "center": {
+          "description": "The bounding box centre's offset from the actor origin, in the actor's own frame, metres.",
+          "$ref": "#/$defs/Vector3"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "type_id",
+        "role",
+        "extent",
+        "center"
+      ],
+      "additionalProperties": false
+    },
+    "ActorGoneRecord": {
+      "title": "ActorGoneRecord",
+      "description": "A vehicle or walker that is no longer in the world (destroyed, or despawned by the traffic), written right before the first tick it is missing from (version 2). It is in no tick from then on.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "actor_gone"
+        },
+        "id": {
+          "$ref": "#/$defs/ActorId"
+        },
+        "frame": {
+          "description": "The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "id",
+        "frame",
+        "t"
+      ],
+      "additionalProperties": false
+    },
+    "TickRecord": {
+      "title": "TickRecord",
+      "description": "The world right after one `world.tick()` (20 Hz). A tick without any vehicle or walker is not written, so `frame` and `t` can skip.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "tick"
+        },
+        "frame": {
+          "description": "The CARLA frame number of the snapshot, a uint64 in LibCarla.",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "Simulated seconds since the scenario clock started (the time pass/fail conditions see); not wall time.",
+          "type": "number"
+        },
+        "actors": {
+          "description": "Every recorded vehicle and walker in the snapshot.",
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/ActorState"
+          }
+        },
+        "control": {
+          "description": "The last control applied to each ego, keyed by its actor id as a decimal string. Empty when there is no ego.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/ActorIdKey"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/VehicleControl"
+          }
+        },
+        "lights": {
+          "description": "The traffic lights whose state changed since the last written tick, keyed by actor id as a decimal string; every light in the first tick. Absent when none changed, so a reader carries each light's state forward.",
+          "type": "object",
+          "propertyNames": {
+            "$ref": "#/$defs/ActorIdKey"
+          },
+          "additionalProperties": {
+            "$ref": "#/$defs/TrafficLightState"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "actors",
+        "control"
+      ],
+      "additionalProperties": false
+    },
+    "MarkersRecord": {
+      "title": "MarkersRecord",
+      "description": "The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. They are what the video draws over the frames of the scenario.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "markers"
+        },
+        "frame": {
+          "description": "The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        },
+        "actor": {
+          "description": "The ego actor they belong to, or null when there was no ego actor on that tick.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActorId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "polylines": {
+          "description": "The lines to draw, in order.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Polyline"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "actor",
+        "polylines"
+      ],
+      "additionalProperties": false
+    },
+    "ConditionRecord": {
+      "title": "ConditionRecord",
+      "description": "A pass or fail condition's state on a tick, written when it changes (version 2): on the first tick it is checked, then whenever it goes from satisfied to not or back. The run checks its conditions in order and stops at the first that decides it, so the last tick may leave later conditions out.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "condition"
+        },
+        "frame": {
+          "description": "The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        },
+        "role": {
+          "description": "Which list the condition is in: a pass condition ends the run passed, a fail condition failed.",
+          "type": "string",
+          "enum": [
+            "pass",
+            "fail"
+          ]
+        },
+        "index": {
+          "description": "The condition's place in its list, from 0 (`pass[0]`, `fail[2]` in _result.json's labels).",
+          "type": "integer",
+          "minimum": 0
+        },
+        "label": {
+          "description": "The condition's label, as the scenario named it.",
+          "type": "string"
+        },
+        "satisfied": {
+          "description": "Whether its check() reported it satisfied on that tick.",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "role",
+        "index",
+        "label",
+        "satisfied"
+      ],
+      "additionalProperties": false
+    },
+    "ResultRecord": {
+      "title": "ResultRecord",
+      "description": "The run's verdict, the last line of a run that ended with one (version 2): what _result.json says, but for each condition's details. A run that raised (or was interrupted) has none.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "result"
+        },
+        "passed": {
+          "description": "Whether the run passed.",
+          "type": "boolean"
+        },
+        "message": {
+          "description": "Why: the deciding condition's message.",
+          "type": "string"
+        },
+        "elapsed_seconds": {
+          "description": "The simulated time the verdict was reached at, seconds.",
+          "type": "number"
+        },
+        "conditions": {
+          "description": "Every condition's final status, as _result.json lists them.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ConditionStatus"
+          }
+        }
+      },
+      "required": [
+        "type",
+        "passed",
+        "message",
+        "elapsed_seconds",
+        "conditions"
+      ],
+      "additionalProperties": false
+    },
+    "SafeUInt": {
+      "description": "A non-negative integer no larger than 2^53 - 1, so that every JSON reader holds it exactly, a double-only one (JavaScript) included. LibCarla's frame counter stays far below it; a value above it fails validation instead of losing precision.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9007199254740991
+    },
+    "UInt64": {
+      "description": "A non-negative integer of up to 64 bits.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 18446744073709551615
+    },
+    "ActorId": {
+      "description": "A CARLA actor id, a uint32 in LibCarla.",
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "ActorIdKey": {
+      "description": "A CARLA actor id as an object key.",
+      "type": "string",
+      "pattern": "^[0-9]+$"
+    },
+    "Vector3": {
+      "title": "Vector3",
+      "description": "[x, y, z]",
+      "type": "array",
+      "prefixItems": [
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        },
+        {
+          "type": "number"
+        }
+      ],
+      "items": false,
+      "minItems": 3
+    },
+    "LightBox": {
+      "title": "LightBox",
+      "description": "[x, y, z, ex, ey, ez, yaw]: a light head's box centre in the world frame (m), its half size (m), and its yaw (deg).",
+      "type": "array",
+      "prefixItems": [
+        {
+          "description": "x (m)",
+          "type": "number"
+        },
+        {
+          "description": "y (m)",
+          "type": "number"
+        },
+        {
+          "description": "z (m)",
+          "type": "number"
+        },
+        {
+          "description": "ex, half size along x (m)",
+          "type": "number"
+        },
+        {
+          "description": "ey, half size along y (m)",
+          "type": "number"
+        },
+        {
+          "description": "ez, half size along z (m)",
+          "type": "number"
+        },
+        {
+          "description": "yaw (deg)",
+          "type": "number"
+        }
+      ],
+      "items": false,
+      "minItems": 7
+    },
+    "StopWaypoint": {
+      "title": "StopWaypoint",
+      "description": "[x, y, z, yaw]: a stop-line waypoint in the world frame (m) and its yaw (deg).",
+      "type": "array",
+      "prefixItems": [
+        {
+          "description": "x (m)",
+          "type": "number"
+        },
+        {
+          "description": "y (m)",
+          "type": "number"
+        },
+        {
+          "description": "z (m)",
+          "type": "number"
+        },
+        {
+          "description": "yaw (deg)",
+          "type": "number"
+        }
+      ],
+      "items": false,
+      "minItems": 4
+    },
+    "ActorState": {
+      "title": "ActorState",
+      "description": "[id, x, y, z, roll, pitch, yaw, vx, vy, vz]: the actor origin's location in the world frame (m), its rotation (deg), and its velocity in the world frame (m/s).",
+      "type": "array",
+      "prefixItems": [
+        {
+          "description": "id",
+          "$ref": "#/$defs/ActorId"
+        },
+        {
+          "description": "x (m)",
+          "type": "number"
+        },
+        {
+          "description": "y (m)",
+          "type": "number"
+        },
+        {
+          "description": "z (m)",
+          "type": "number"
+        },
+        {
+          "description": "roll (deg)",
+          "type": "number"
+        },
+        {
+          "description": "pitch (deg)",
+          "type": "number"
+        },
+        {
+          "description": "yaw (deg)",
+          "type": "number"
+        },
+        {
+          "description": "vx (m/s)",
+          "type": "number"
+        },
+        {
+          "description": "vy (m/s)",
+          "type": "number"
+        },
+        {
+          "description": "vz (m/s)",
+          "type": "number"
+        }
+      ],
+      "items": false,
+      "minItems": 10
+    },
+    "VehicleControl": {
+      "title": "VehicleControl",
+      "description": "[throttle, steer, brake, gear]: throttle and brake in [0, 1], steer in [-1, 1] (normalised, not an angle), gear an integer.",
+      "type": "array",
+      "prefixItems": [
+        {
+          "description": "throttle",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        {
+          "description": "steer",
+          "type": "number",
+          "minimum": -1,
+          "maximum": 1
+        },
+        {
+          "description": "brake",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        {
+          "description": "gear",
+          "type": "integer"
+        }
+      ],
+      "items": false,
+      "minItems": 4
+    },
+    "TrafficLightState": {
+      "title": "TrafficLightState",
+      "description": "A `carla.TrafficLightState` member's name.",
+      "type": "string",
+      "enum": [
+        "Red",
+        "Yellow",
+        "Green",
+        "Off",
+        "Unknown"
+      ]
+    },
+    "FileRef": {
+      "title": "FileRef",
+      "description": "A file the run read: where it was, and what it held.",
+      "type": "object",
+      "properties": {
+        "path": {
+          "description": "Its absolute path on the machine that ran.",
+          "type": "string"
+        },
+        "sha256": {
+          "description": "The SHA-256 of its bytes, lowercase hex.",
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "bytes": {
+          "description": "Its size in bytes.",
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "path",
+        "sha256",
+        "bytes"
+      ],
+      "additionalProperties": false
+    },
+    "Rgb": {
+      "title": "Rgb",
+      "description": "[r, g, b], each 0-255.",
+      "type": "array",
+      "prefixItems": [
+        {
+          "description": "r",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        {
+          "description": "g",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        },
+        {
+          "description": "b",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      ],
+      "items": false,
+      "minItems": 3
+    },
+    "Polyline": {
+      "title": "Polyline",
+      "description": "A line through `points`, in CARLA's world frame (`DebugPolyline`).",
+      "type": "object",
+      "properties": {
+        "points": {
+          "description": "Its vertices, in order, in the world frame (m).",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/Vector3"
+          }
+        },
+        "color": {
+          "description": "Its colour.",
+          "$ref": "#/$defs/Rgb"
+        },
+        "thickness": {
+          "description": "Its thickness, metres.",
+          "type": "number",
+          "minimum": 0
+        },
+        "point_size": {
+          "description": "The size of a dot drawn at each vertex, metres; none when 0.",
+          "type": "number",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "points",
+        "color",
+        "thickness",
+        "point_size"
+      ],
+      "additionalProperties": false
+    },
+    "ConditionStatus": {
+      "title": "ConditionStatus",
+      "description": "A condition's state when the run ended (`ConditionStatus`, without its details).",
+      "type": "object",
+      "properties": {
+        "label": {
+          "description": "Its label in _result.json: role, index and the condition's label, e.g. \"pass[0](reached_goal)\".",
+          "type": "string"
+        },
+        "role": {
+          "description": "\"pass\" or \"fail\"; empty for a condition of neither list.",
+          "type": "string"
+        },
+        "condition_type": {
+          "description": "Its class name, e.g. \"TimeoutCondition\".",
+          "type": "string"
+        },
+        "satisfied": {
+          "description": "Whether it was satisfied when the run ended.",
+          "type": "boolean"
+        },
+        "message": {
+          "description": "Its message then.",
+          "type": "string"
+        }
+      },
+      "required": [
+        "label",
+        "role",
+        "condition_type",
+        "satisfied",
+        "message"
+      ],
+      "additionalProperties": false
+    }
+  }
+}
