@@ -42,6 +42,7 @@ class Stats(TypedDict):
     traffic_lights: int
     markers: int
     conditions: int
+    actions: int
     has_result: bool
     #: The Lanelet2 map drawn, if any.
     map: str | None

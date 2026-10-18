@@ -72,6 +72,7 @@ fn stats_dict<'py>(py: Python<'py>, s: &Stats) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("traffic_lights", s.traffic_lights)?;
     d.set_item("markers", s.markers)?;
     d.set_item("conditions", s.conditions)?;
+    d.set_item("actions", s.actions)?;
     d.set_item("has_result", s.has_result)?;
     d.set_item("map", s.map.as_ref().map(|p| p.to_string_lossy()))?;
     d.set_item("map_cached", s.map_cached)?;

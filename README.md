@@ -37,7 +37,7 @@ Both functions release the GIL for all of their work, so a sweep can hand the
 previous case to a worker thread and go on with the next. Type stubs ship in
 the wheel (`_native.pyi`, `py.typed`); `Stats` is a `TypedDict`: `input`,
 `output`, `schema_version`, `bytes`, `lines`, `ticks`, `actors`, `actor_rows`,
-`traffic_lights`, `markers`, `conditions`, `has_result`, `map`, `map_cached`,
+`traffic_lights`, `markers`, `conditions`, `actions`, `has_result`, `map`, `map_cached`,
 `unknown_types` (`{type: lines}`), `unknown_first_lines`, `unknown_fields`
 (`{record.field: lines}`), `unknown_field_first_lines`, `null_numbers`, `warnings`,
 `rrd_bytes`, and the seconds spent parsing, reading the map and writing.
@@ -96,6 +96,7 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `world/traffic_lights/stops`, `world/traffic_lights/states` | stop-line waypoints; state changes (`TextLog`) |
 | `conditions/<pass\|fail>/<index>` | 1 while the condition is satisfied, on every tick from its first check |
 | `scenario/progress` | the run in the state timeline view (`StateChange`): `running` from the first tick, then `PASSED` / `FAILED` at the last |
+| `scenario/actions/<label>` | each action's lifecycle (`action` records): standby, start, running, end, complete -- OpenSCENARIO's states, the start and end held for the tick they happen on; the lane named by its label (two actions with one label get `_<phase>_<index>`) |
 | `scenario/conditions/<pass\|fail>/<label>` | each condition `satisfied` / `not satisfied`, its lane named by its label (`pass/reached_goal`; what a path would have to escape becomes `_`, and two conditions with one label get `_<index>`); a pass condition satisfied is green, a fail condition red |
 | `scenario/traffic_lights/<name>` | each light's state (`Red`, `Yellow`, `Green`, ...) over time, the lane named as the tag (`1234`, `carla_77`) |
 | `result`, `result/log`, `result/passed` | the verdict (the `result` record, or `_result.json` for a version-1 log) |
@@ -104,13 +105,15 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 
 ### The layout
 
-A recording carries its blueprint, active when it opens, with two views:
+A recording carries its blueprint, active when it opens, with three views:
 
-- **Ego** (3D, the top three quarters): the scene from behind the ego,
+- **Ego** (3D, the top three fifths): the scene from behind the ego,
   following it -- the view's origin is `world/ego/pose`, the eye 14 m behind
   and 6 m above it (still free to orbit);
 - **Conditions** (state timeline): `scenario/conditions/**` -- which
-  condition held when.
+  condition held when;
+- **Actions** (state timeline): `scenario/actions/**` -- when each action
+  was triggered, ran and finished.
 
 Everything else -- speed, control, the verdict, the lights, the logs -- is
 in the recording, to be added from the blueprint panel, which starts open
@@ -158,7 +161,9 @@ came from. Both format versions convert:
 
 - **version 1** (ACS 14.x and earlier): `world`, `traffic_light`, `actor`, `tick`;
 - **version 2** (`world.schema_version: 2`): adds `map`, `warmup`,
-  `actor_gone`, `markers`, `condition`, `result`.
+  `actor_gone`, `markers`, `condition`, `action`, `result`. (`action` -- each
+  action's lifecycle -- is not in ACS yet: the vendored schema is ACS's
+  version 2 with it added, see `schema/SOURCE`.)
 
 ### Updating the schema
 

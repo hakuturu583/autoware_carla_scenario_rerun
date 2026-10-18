@@ -112,6 +112,7 @@ pub struct Stats {
     pub traffic_lights: u64,
     pub markers: u64,
     pub conditions: u64,
+    pub actions: u64,
     pub has_result: bool,
     /// The Lanelet2 map drawn, if any.
     pub map: Option<PathBuf>,
@@ -460,6 +461,7 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
             Record::TrafficLight(_) => stats.traffic_lights += 1,
             Record::Markers(_) => stats.markers += 1,
             Record::Condition(_) => stats.conditions += 1,
+            Record::Action(_) => stats.actions += 1,
             Record::Result(_) => stats.has_result = true,
             _ => {}
         }

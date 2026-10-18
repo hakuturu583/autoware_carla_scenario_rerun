@@ -1,12 +1,13 @@
 //! The viewer layout a recording opens with (its blueprint).
 //!
-//! Two views, one above the other; everything else is a click away in the
+//! Three views, one above the other; everything else is a click away in the
 //! blueprint panel, which starts open:
 //!
 //! | view | what |
 //! |---|---|
 //! | `Ego` (3D) | the scene from behind the ego, following it (origin `world/ego/pose`) |
 //! | `Conditions` (state timeline) | `scenario/conditions/**`: when each pass/fail condition held |
+//! | `Actions` (state timeline) | `scenario/actions/**`: when each action started, ran and ended |
 //!
 //! The blueprint is written with the blueprint archetypes directly: the Rust
 //! SDK's `Spatial3DView` cannot set the eye.
@@ -143,7 +144,13 @@ pub fn send(
         "/scenario/conditions",
         &["$origin/**"],
     )?;
-    let root = b.column(&[scene, conditions], &[3.0, 1.0])?;
+    let actions = b.view(
+        "StateTimeline",
+        "Actions",
+        "/scenario/actions",
+        &["$origin/**"],
+    )?;
+    let root = b.column(&[scene, conditions, actions], &[3.0, 1.0, 1.0])?;
 
     let bp = &b.bp;
     bp.log(

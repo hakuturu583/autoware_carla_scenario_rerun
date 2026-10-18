@@ -23,6 +23,7 @@
 //! | `world/traffic_lights/states` | the state changes, `TextLog` |
 //! | `conditions/<role>/<index>` | 1 while a pass/fail condition is satisfied, 0 while not (`condition` records, carried forward) |
 //! | `scenario/progress` | running, then the verdict (`StateChange`, for the state timeline view) |
+//! | `scenario/actions/<label>` | each action's lifecycle (standby, start, running, end, complete), from the `action` records (`StateChange`) |
 //! | `scenario/conditions/<role>/<label>` | satisfied / not satisfied, from the `condition` records (`StateChange`) |
 //! | `scenario/traffic_lights/<id>` | each light's state over time (`StateChange`) |
 //! | `result`, `result/log`, `result/passed` | the verdict |
@@ -63,6 +64,8 @@ const LIGHT_TAG_HEIGHT_M: f64 = 0.8;
 const RUNNING_COLOR: [u8; 3] = [64, 160, 255];
 const PASSED_COLOR: [u8; 3] = [0, 200, 80];
 const FAILED_COLOR: [u8; 3] = [230, 50, 50];
+const START_COLOR: [u8; 3] = [255, 200, 0];
+const END_COLOR: [u8; 3] = [255, 140, 0];
 const UNSATISFIED_COLOR: [u8; 3] = [90, 90, 90];
 
 fn rgb(c: [u8; 3]) -> Color {
@@ -165,6 +168,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     let mut markers: Vec<&g::MarkersRecord> = Vec::new();
     let mut gone: Vec<&g::ActorGoneRecord> = Vec::new();
     let mut conditions: BTreeMap<(String, u64), Vec<&g::ConditionRecord>> = BTreeMap::new();
+    let mut actions: BTreeMap<(String, u64), Vec<&g::ActionRecord>> = BTreeMap::new();
     let mut world = None;
     let mut map_record = None;
     let mut warmup = None;
@@ -190,6 +194,12 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
                     .or_default()
                     .push(r);
             }
+            Record::Action(r) => {
+                actions
+                    .entry((r.phase.to_string(), r.index))
+                    .or_default()
+                    .push(r);
+            }
             Record::Result(r) => result = Some(r),
         }
     }
@@ -212,6 +222,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     }
     write_progress(&mut w, ticks, result)?;
     write_condition_states(&mut w, &conditions)?;
+    write_action_states(&mut w, &actions)?;
     write_light_states(&mut w, ticks, &names)?;
     if let Some(map) = &inputs.map {
         write_map(&mut w, map)?;
@@ -1042,6 +1053,53 @@ fn write_progress(w: &mut Writer, ticks: &Ticks, result: Option<&g::ResultRecord
         &times,
         states,
     )
+}
+
+/// Each action's lifecycle state, OpenSCENARIO's: standby, the tick it
+/// started on, running, the tick it ended on, complete.
+fn write_action_states(
+    w: &mut Writer,
+    actions: &BTreeMap<(String, u64), Vec<&g::ActionRecord>>,
+) -> RrResult<()> {
+    let names: Vec<Option<String>> = actions
+        .values()
+        .map(|records| condition_lane(&records[0].label))
+        .collect();
+    for (((phase, index), records), name) in actions.iter().zip(&names) {
+        // Two actions with the same label: their place tells them apart.
+        let shared = names.iter().filter(|n| *n == name).count() > 1;
+        let lane = match name {
+            Some(name) if shared => format!("{name}_{phase}_{index}"),
+            Some(name) => name.clone(),
+            None => format!("{phase}_{index}"),
+        };
+        let (mut frames, mut times, mut states) = (Vec::new(), Vec::new(), Vec::new());
+        for r in records {
+            let state = r.state.to_string();
+            if frames.last() == Some(&r.frame.0) {
+                *states.last_mut().unwrap() = state;
+            } else {
+                frames.push(r.frame.0);
+                times.push(r.t);
+                states.push(state);
+            }
+        }
+        write_states(
+            w,
+            &format!("scenario/actions/{lane}"),
+            &[
+                ("standbyState", "standby".into(), UNSATISFIED_COLOR),
+                ("startTransition", "start".into(), START_COLOR),
+                ("runningState", "running".into(), RUNNING_COLOR),
+                ("endTransition", "end".into(), END_COLOR),
+                ("completeState", "complete".into(), PASSED_COLOR),
+            ],
+            &frames,
+            &times,
+            states,
+        )?;
+    }
+    Ok(())
 }
 
 /// A condition's lane name: its label (the view names a lane by its entity

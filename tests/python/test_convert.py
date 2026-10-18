@@ -155,6 +155,7 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     assert stats["actors"] == 3
     assert stats["markers"] == 2
     assert stats["conditions"] == 3
+    assert stats["actions"] == 6
     assert stats["has_result"]
     # The map record names the file, and its offsets place it.
     assert stats["map"] == str(TEST_MAP)
@@ -204,6 +205,16 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     assert states("traffic_lights/30") == [(100, "Red"), (125, "Green")]
     tags = read_rrd(out, "/world/traffic_lights/tags")
     assert [list(t) for t in cells(tags, "/world/traffic_lights/tags:Points3D:labels")] == [["30 Red"], ["30 Green"]]
+    # Each action's lifecycle, named by its label.
+    assert states("actions/cut_in") == [
+        (100, "standbyState"), (105, "startTransition"), (106, "runningState"),
+        (115, "endTransition"), (116, "completeState"),
+    ]
+    assert states("actions/lead_speed") == [(100, "runningState")]
+    style = read_rrd(out, "/scenario/actions/cut_in", index=None)
+    assert list(style["/scenario/actions/cut_in:StateConfiguration:labels"][0]) == [
+        "standby", "start", "running", "end", "complete",
+    ]
     style = read_rrd(out, "/scenario/conditions/pass/reached_goal", index=None)
     labels = style["/scenario/conditions/pass/reached_goal:StateConfiguration:labels"][0]
     assert list(labels) == ["satisfied", "not satisfied"]
@@ -237,7 +248,7 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
 def test_simd_json_gives_the_same_recording(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     a = acsr.convert(v2_log, tmp_path / "a.rrd", parser="serde_json")
     b = acsr.convert(v2_log, tmp_path / "b.rrd", parser="simd_json")
-    for key in ("ticks", "actors", "actor_rows", "markers", "conditions", "lines"):
+    for key in ("ticks", "actors", "actor_rows", "markers", "conditions", "actions", "lines"):
         assert a[key] == b[key]
     da = read_rrd(tmp_path / "a.rrd", "/world/**")
     db = read_rrd(tmp_path / "b.rrd", "/world/**")
@@ -421,7 +432,8 @@ def test_rerun_verifies_the_recordings(v1_log: Path, v2_log: Path, tmp_path: Pat
 
 def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None:
     """The blueprint is in the file, active: a chase view on the ego and the
-    conditions' state timeline; the rest is left to the blueprint panel."""
+    state timelines of the conditions and the actions; the rest is left to
+    the blueprint panel."""
     import subprocess
     import sys
 
@@ -434,7 +446,7 @@ def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None
     assert done.returncode == 0, done.stderr
     text = done.stdout
     assert f'StoreId(Blueprint, "autoware_carla_scenario", "{v2_log.name.split(".")[0]}.blueprint"), make_active: true' in text
-    assert text.count("ViewBlueprint:class_identifier") == 2
+    assert text.count("ViewBlueprint:class_identifier") == 3
     for expected in ("/world/ego/pose@Transform3D", "EyeControls3D:position", "EyeControls3D:look_target"):
         assert expected in text, expected
 

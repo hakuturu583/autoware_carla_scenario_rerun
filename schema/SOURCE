@@ -1,6 +1,6 @@
 # Where schema/trajectory.schema.json was copied from (tools/update_schema.sh writes this).
 repository: autowarefoundation/autoware_carla_scenario
 path: autoware_carla_scenario/src/autoware_carla_scenario/schemas/trajectory.schema.json
-ref: perf/dedicated-render-server (pre-merge; working tree on base 6be257e6)
+ref: c92666122031096917930327427fdad2a679beae (branch feat/trajectory-log-actions on feat/video-off-trajectory-log-v2 ca7b9eb; not yet upstream)
 x-schema-version: 2
-sha256: c44ae3159b0504cebde987a4c83c535d644db8c0203233cde5009e22f90fb993
+sha256: cba9bc8a34b8a3a06c8a7c7654a0f7e6c6b097e0014ce5095531d69d79e99888
