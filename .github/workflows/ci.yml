@@ -112,3 +112,40 @@ jobs:
           assert stats["ticks"] == 334 and os.path.getsize(out) > 0, stats
           print("converted", stats["ticks"], "ticks into", stats["rrd_bytes"], "bytes")
           PY
+
+  manylinux:
+    # The release's wheel build (release.yml's `wheel` job): maturin-action in
+    # the manylinux_2_28 image, natively per architecture, so that path is
+    # proven on every PR rather than first at release time.
+    name: manylinux_2_28 wheel (${{ matrix.arch.name }})
+    runs-on: ${{ matrix.arch.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - { name: x86_64, runner: ubuntu-24.04 }
+          - { name: aarch64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.arch.name }}
+          manylinux: "2_28"
+          args: --release --out dist
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.10" }
+      - name: Check the wheel (abi3, manylinux_2_28, converts a log)
+        run: |
+          set -euo pipefail
+          ls -l dist
+          case "$(ls dist/*.whl)" in
+            *-cp310-abi3-manylinux_2_28_${{ matrix.arch.name }}.whl) ;;
+            *) echo "::error::not an abi3 manylinux_2_28 wheel: $(ls dist)"; exit 1 ;;
+          esac
+          python -m venv /tmp/check
+          /tmp/check/bin/pip install dist/*.whl
+          cd /tmp && /tmp/check/bin/python -c "
+          import autoware_carla_scenario_rerun as m
+          s = m.convert('$GITHUB_WORKSPACE/tests/data/v1/TrafficLightComplianceScenario-1.trajectory.jsonl', '/tmp/x.rrd')
+          assert s['ticks'] == 334, s
+          print(m.__version__, 'OK')"

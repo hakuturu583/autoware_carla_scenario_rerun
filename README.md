@@ -28,8 +28,8 @@ A whole 24-case sweep converts in under 30 ms (see [Performance](#performance)).
 | | |
 |---|---|
 | `convert(jsonl, out_rrd=None, *, result_json=None, map_dir=None, map_path=None, no_map=False, strict=False, parser="serde_json") -> Stats` | One log. `out_rrd` defaults to `X.rrd` beside `X.trajectory.jsonl`; `result_json` to `X_result.json` beside it (read only for a log without a `result` record). |
-| `convert_dir(output_dir, *, jobs=None, out_dir=None, map_dir=None, no_map=False, strict=False, parser="serde_json") -> list[Stats \| Failure]` | Every `*.trajectory.jsonl` under a directory (recursively), `jobs` at a time (all cores by default), into `out_dir` (same layout) or beside the logs. A failing log does not stop the others: its entry has `ok: False`, `error` and `error_type`. |
-| `ConversionError` > `MalformedLineError` (`.line`), `UnknownRecordTypeError` (`.line`, `.record_type`) | What `convert` raises. |
+| `convert_dir(output_dir, *, jobs=None, out_dir=None, map_dir=None, no_map=False, strict=False, parser="serde_json") -> list[Stats \| Failure]` | Every `*.trajectory.jsonl` under a directory (recursively), `jobs` at a time (all cores by default), into `out_dir` (same layout) or beside the logs. A failing log -- or one whose conversion panics -- does not stop the others: its entry has `ok: False`, `error`, `error_type`, the log as `input` and the file at fault (the log, its `_result.json`, the recording) as `error_path`. |
+| `ConversionError` (`.input`, `.path`) > `MalformedLineError` (`.line`), `UnknownRecordTypeError` (`.line`, `.record_type`), `UnknownFieldError` (`.line`, `.field`) | What `convert` raises. Plain Python exceptions: they pickle, attributes included, so a conversion in a `ProcessPoolExecutor` worker raises the same error in the parent. |
 | `clear_map_cache()` | Forget the Lanelet2 maps read so far. |
 | `RERUN_VERSION`, `SCHEMA_VERSION`, `RECORD_TYPES`, `LOGGER_NAME` | |
 
@@ -38,26 +38,41 @@ previous case to a worker thread and go on with the next. Type stubs ship in
 the wheel (`_native.pyi`, `py.typed`); `Stats` is a `TypedDict`: `input`,
 `output`, `schema_version`, `bytes`, `lines`, `ticks`, `actors`, `actor_rows`,
 `traffic_lights`, `markers`, `conditions`, `has_result`, `map`, `map_cached`,
-`unknown_types` (`{type: lines}`), `unknown_first_lines`, `warnings`,
+`unknown_types` (`{type: lines}`), `unknown_first_lines`, `unknown_fields`
+(`{record.field: lines}`), `unknown_field_first_lines`, `null_numbers`, `warnings`,
 `rrd_bytes`, and the seconds spent parsing, reading the map and writing.
 
 The Rust library has the same entry points
 (`autoware_carla_scenario_rerun::{convert, convert_dir, ConvertOptions}`).
 
-### Unknown record types
+### A newer log: unknown record types and fields
 
-A record type the vendored schema does not define (a newer ACS) is skipped, so
-the rest of the log still converts -- never silently:
+A newer ACS may write what the vendored schema does not define. The log still
+converts, and never silently:
 
-- one `logging` warning per type and file, with the count and the first line
-  (logger `autoware_carla_scenario_rerun`; in Rust, `log::warn!` with that
-  target);
-- `stats["unknown_types"]` and `stats["unknown_first_lines"]`;
-- a `WARN` `TextLog` under `diagnostics/unknown_types/<type>` in the
-  recording, so the viewer shows it too.
+- a record type it does not know is skipped (if the line is JSON at all);
+- a field it does not know -- on any record, nested ones too
+  (`map.lanelet2.size`), on a tick, or past the end of an actor row or a
+  control (`tick.actors[10..]`) -- is ignored.
 
-`strict=True` raises `UnknownRecordTypeError` instead. Other problems -- a map
-that is not on this machine, an empty log -- are warnings the same three ways.
+Each is reported once per type (or `record.field`) and file, with the number
+of lines and the first one:
+
+- a `logging` warning (logger `autoware_carla_scenario_rerun`; in Rust,
+  `log::warn!` with that target);
+- `stats["unknown_types"]` / `stats["unknown_first_lines"]`, and
+  `stats["unknown_fields"]` / `stats["unknown_field_first_lines"]`;
+- a `WARN` `TextLog` under `diagnostics/unknown_types/<type>` or
+  `diagnostics/unknown_fields/<record.field>` in the recording, so the viewer
+  shows it too.
+
+`strict=True` raises `UnknownRecordTypeError` / `UnknownFieldError` instead.
+A number of an actor row or a control written as `null` (orjson's NaN) is
+read as NaN and counted (`stats["null_numbers"]`, a warning). Other problems
+-- a map that is not on this machine or cannot be read, an empty log -- are
+warnings the same three ways; a map that cannot be read is retried by the
+next conversion. A recording is written to a temporary file and renamed into
+place, so a conversion that fails leaves no partial `.rrd`.
 
 ## What a recording holds
 
@@ -70,7 +85,7 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `info` | the run: CARLA map, episode, format version, map files, warm-up (markdown) |
 | `world/actors` | every vehicle and walker, one `Boxes3D` batch per tick (centre and rotation each tick; sizes, `id type_id role` labels and colours whenever the set of actors changes) |
 | `world/actors/velocity` | their velocities (`Arrows3D` from the box centres) |
-| `world/actors/events` | spawned / gone (`TextLog`) |
+| `world/actors/events` | spawned / gone (`TextLog`; gone at the `actor_gone` record's frame, the box too, even when that tick was not written) |
 | `world/ego/driven_path` | the ego's path, a point every 0.5 m (static) |
 | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (a planner's trajectory: `markers` records), held until the next record |
 | `ego/speed_mps`, `ego/control` | speed, and throttle / steer / brake (`Scalars`) |
@@ -83,11 +98,17 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 
 ### The map
 
-The map is drawn from the log's `map` record (version 2): its Lanelet2 file,
-`projector_info`, `mgrs_offset` and `z_offset`. Without one (version 1), or
-when the file is not on this machine, `map_dir` is searched for
-`<name>/lanelet2_map.osm` (one level deeper too: the layout of ACS's map root
-`~/autoware_data/maps`); `map_path` forces a file.
+The file drawn is `map_path` when given, else the Lanelet2 file the log's
+`map` record (version 2) names when it is on this machine, else
+`<name>/lanelet2_map.osm` under `map_dir` (one level deeper too: the layout
+of ACS's map root `~/autoware_data/maps`).
+
+The run's own projection (`projector_type`, `projector_info`, its OpenDRIVE)
+and offsets (`mgrs_offset`, `z_offset`) apply only when that file *is* the
+run's map: its SHA-256 is the one the `map` record has. Any other file -- an
+override, another copy found under `map_dir`, a version-1 log's -- is read
+with its own `map_projector_info.yaml` and placed at its origin, with a
+warning when the log recorded a different map.
 
 The OSM is read with quick-xml and projected the way ACS reads it
 (`coordinate/projection.py`): with the projector `map_projector_info.yaml`
@@ -95,9 +116,8 @@ names (`Local` -> Lanelet2's `UtmProjector` at the origin, `MGRS` ->
 Autoware's `MGRSProjector`, `TransverseMercator`, `LocalCartesian`), `MGRS`
 without one; anchored at the descriptor's origin, else the OpenDRIVE
 `geoReference` beside the map, else (0, 0). A point lands at
-`(x_map - ox, y_map - oy, z_map - z_offset)`; a version-1 log has no offsets,
-so the origin's projection is the offset (what ACS computes) and `z_offset` is
-0. The projections (Krüger's series to n^6) match simple-lanelet2's projectors
+`(x_map - ox, y_map - oy, z_map - z_offset)`; without the run's offsets, the
+origin's projection is the offset (what ACS computes) and `z_offset` is 0. The projections (Krüger's series to n^6) match simple-lanelet2's projectors
 to 1e-6 m. A map is parsed once per process, keyed by its sha256 from the log
 (else its path, size and mtime): `convert_dir` over a sweep reads it once.
 
@@ -115,7 +135,10 @@ came from. Both format versions convert:
 
 The Rust record types (`src/generated.rs`) are generated from the schema with
 [typify](https://github.com/oxidecomputer/typify) by the `xtask` crate; they
-are never edited by hand.
+are never edited by hand. Every closed object of the schema is opened on the
+way (`additionalProperties: false` -> `{}`), so the generated structs keep an
+undeclared field in `extra` instead of refusing the line, and `xtask`
+generates an `UnknownFields` impl per struct that reports them by path.
 
 ```bash
 tools/update_schema.sh ~/workspace/autoware_carla_scenario   # copy, record schema/SOURCE, regenerate
@@ -136,12 +159,15 @@ spellings (`$defs`, `prefixItems`) into their draft-07 equivalents.
   (the recorder writes it first; anywhere works). Ticks -- nearly every line
   -- go through a serde `DeserializeSeed` that appends straight into columnar
   buffers (frame, t; one row per actor: id, position, rotation, velocity;
-  controls; light changes): no record, map or string is built per tick. Their
-  elements are the *generated* types (`ActorState`, `VehicleControl`,
-  `TrafficLightState`: tuples and enums, which allocate nothing), so a schema
-  change to them is a compile error, and a property test checks the fast path
-  against the generated `TickRecord` for random ticks, chunk sizes and both
-  parsers. The other records deserialize into their generated types.
+  controls; light changes): no record, map or string is built per tick (a
+  field name is copied only for a field the schema does not define). Light
+  states and actor ids are the *generated* types; the numbers of a row are
+  read one by one so that a `null` is NaN rather than an error. A property
+  test checks the fast path against the generated `TickRecord` for random
+  ticks, chunk sizes and both parsers. The other records deserialize into
+  their generated types. A UTF-8 BOM and whitespace inside the
+  `{"type": ...` prefix are accepted; a line of an unknown type must still be
+  JSON.
 - **Writing.** `rerun::RecordingStreamBuilder::save` writes the file;
   everything temporal goes through `send_columns`, one call per entity (the
   whole run's actor boxes are one chunk, partitioned by tick). What never
@@ -229,11 +255,20 @@ merged to `main` with exactly one `release:patch` / `release:minor` /
 `release:major` label bumps the version (`tools/bump_version.py`: Cargo.toml
 and Cargo.lock), tags it `X.Y.Z` and publishes the manylinux_2_28 abi3 wheels
 (x86_64, aarch64) and the sdist to PyPI (`.github/workflows/release.yml`). A
-pushed `X.Y.Z` tag publishes that version -- the first release, 0.1.0, is cut
-this way -- and a manual run is a dry run (with `publish: true`, to TestPyPI).
+pushed `X.Y.Z` tag publishes that version. A manual run (`workflow_dispatch`)
+is a dry run: it tests, builds and checks the sdist and both wheels, and
+uploads nothing. CI builds the same manylinux wheels on every PR.
 
-Publishing uses PyPI Trusted Publishing, no tokens. It needs a (pending)
-publisher on PyPI (and on TestPyPI for dry runs) with
+The first release, 0.1.0 (the version in Cargo.toml):
+
+1. merge this repository's first PR (no release label);
+2. run the Release workflow by hand on `main` and check that the sdist and
+   both manylinux wheels build and pass their checks;
+3. push the tag `0.1.0` on that commit: the run publishes to PyPI, installs
+   the release back from PyPI on both architectures, and publishes the
+   GitHub release.
+
+Publishing uses PyPI Trusted Publishing, no tokens: the project's publisher is
 
 | | |
 |---|---|
@@ -241,7 +276,7 @@ publisher on PyPI (and on TestPyPI for dry runs) with
 | Owner | `hakuturu583` |
 | Repository name | `autoware_carla_scenario_rerun` |
 | Workflow name | `release.yml` |
-| Environment name | `pypi` (TestPyPI: `testpypi`) |
+| Environment name | `pypi` |
 
 ## License
 

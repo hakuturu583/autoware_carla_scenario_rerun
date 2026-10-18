@@ -18,21 +18,21 @@
 #   push a release tag   a hand-cut tag (the first release, 0.1.0, or a hotfix)
 #                  is built and published directly, then gets a GitHub release;
 #                  the `release` job is skipped.
-#   workflow_dispatch    a dry run: builds and checks everything at the
-#                  dispatched commit, without tagging; with publish=true it also
-#                  uploads to TestPyPI.
+#   workflow_dispatch    a dry run: tests, builds and checks the sdist and both
+#                  manylinux wheels at the dispatched commit; nothing is tagged
+#                  or uploaded.
 #
-# After an upload, `verify-published` installs that version from the index it
-# went to (nothing else) on each architecture and converts a log with it.
+# After an upload, `verify-published` installs that version from PyPI
+# (nothing else) on each architecture and converts a log with it.
 #
 # It is one workflow rather than a separate `on: push: tags` one on purpose: the
 # auto-release tag is pushed with GITHUB_TOKEN, and a tag pushed with
 # GITHUB_TOKEN starts no new workflow runs. So the tag is built and published by
 # follow-up jobs of the run that cut it.
 #
-# Publishing uses PyPI Trusted Publishing (OIDC) from the "pypi" / "testpypi"
-# environments; register them as the project's trusted publisher (README,
-# "Releasing"). No API tokens are stored.
+# Publishing uses PyPI Trusted Publishing (OIDC) from the "pypi" environment,
+# the project's trusted publisher (README, "Releasing"). No API tokens are
+# stored.
 #
 # A version can never be replaced on PyPI, so the tests run again on the tagged
 # commit rather than trusting that CI was green.
@@ -43,11 +43,6 @@ on:
     branches: [main]
     tags: ["[0-9]+.[0-9]+.[0-9]+"]
   workflow_dispatch:
-    inputs:
-      publish:
-        description: "Upload to TestPyPI (otherwise build and check only)"
-        type: boolean
-        default: false
 
 permissions:
   contents: read
@@ -173,8 +168,6 @@ jobs:
     outputs:
       proceed: ${{ steps.r.outputs.proceed }}
       publish: ${{ steps.r.outputs.publish }}
-      index: ${{ steps.r.outputs.index }}
-      upload_url: ${{ steps.r.outputs.upload_url }}
       ref: ${{ steps.r.outputs.ref }}
       tag: ${{ steps.r.outputs.tag }}
     steps:
@@ -189,10 +182,9 @@ jobs:
           RELEASE_RESULT: ${{ needs.release.result }}
           BUMP: ${{ needs.release.outputs.bump }}
           TAG: ${{ needs.release.outputs.tag }}
-          INPUT_PUBLISH: ${{ inputs.publish }}
         run: |
           set -euo pipefail
-          proceed=false; publish=false; index=pypi; ref="$SHA"; tag=""
+          proceed=false; publish=false; ref="$SHA"; tag=""
           if [ "$EVENT" = push ] && [[ "$REF" == refs/tags/* ]]; then
             # A hand-cut tag: it must be the package's version.
             version=$(python3 tools/bump_version.py --current)
@@ -207,28 +199,20 @@ jobs:
               proceed=true; publish=true; ref="$TAG"; tag="$TAG"
             fi
           elif [ "$EVENT" = workflow_dispatch ]; then
-            proceed=true; index=testpypi
-            if [ "$INPUT_PUBLISH" = true ]; then publish=true; fi
-          fi
-          upload_url=https://upload.pypi.org/legacy/
-          json=https://pypi.org/pypi
-          if [ "$index" = testpypi ]; then
-            upload_url=https://test.pypi.org/legacy/; json=https://test.pypi.org/pypi
+            # A dry run: everything is built and checked, nothing uploaded.
+            proceed=true
           fi
           # PyPI accepts a version once: fail now, not after the build. A re-run
           # (attempt > 1) may be finishing a partial upload, so it is let through.
           if [ "$publish" = true ] && [ "$RUN_ATTEMPT" -eq 1 ]; then
-            # The tag is the version; a dispatch publishes the checked-out one.
-            version="${tag:-$(python3 tools/bump_version.py --current)}"
-            code=$(curl -s -o /dev/null -w '%{http_code}' "${json}/${PACKAGE}/${version}/json")
+            code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/${PACKAGE}/${tag}/json")
             if [ "$code" = 200 ]; then
-              echo "::error::${PACKAGE} ${version} is already on ${index}"
+              echo "::error::${PACKAGE} ${tag} is already on PyPI"
               exit 1
             fi
           fi
           {
-            echo "proceed=$proceed"; echo "publish=$publish"; echo "index=$index"
-            echo "upload_url=$upload_url"; echo "ref=$ref"; echo "tag=$tag"
+            echo "proceed=$proceed"; echo "publish=$publish"; echo "ref=$ref"; echo "tag=$tag"
           } | tee -a "$GITHUB_OUTPUT"
 
   verify:
@@ -316,16 +300,15 @@ jobs:
         with: { name: "dist-wheel-${{ matrix.arch.name }}", path: dist/*.whl }
 
   publish:
-    name: publish to ${{ needs.resolve.outputs.index }}
+    name: publish to PyPI
     needs: [resolve, sdist, wheel]
-    # Decided by `resolve`, from the event: a release goes to PyPI; a manual
-    # run only with publish=true, to TestPyPI. Waits for every build, so
-    # nothing is uploaded unless all of it built.
+    # Decided by `resolve`: a release tag only (never a manual run). Waits
+    # for every build, so nothing is uploaded unless all of it built.
     if: >-
       always() && needs.resolve.outputs.publish == 'true' &&
       needs.sdist.result == 'success' && needs.wheel.result == 'success'
     runs-on: ubuntu-24.04
-    environment: ${{ needs.resolve.outputs.index }}
+    environment: pypi
     permissions:
       id-token: write  # Trusted Publishing; no token in secrets.
     steps:
@@ -339,15 +322,14 @@ jobs:
       - run: pipx run twine check --strict dist/*
       - uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          repository-url: ${{ needs.resolve.outputs.upload_url }}
           # An existing file is an error, so a version is never "released"
           # without uploading anything; only a re-run may finish a partial upload.
           skip-existing: ${{ github.run_attempt > 1 }}
 
   # What `pip install autoware-carla-scenario-rerun` gets, on each
-  # architecture: the version just uploaded, from that index alone.
+  # architecture: the version just uploaded, from PyPI alone.
   verify-published:
-    name: install from ${{ needs.resolve.outputs.index }} (${{ matrix.arch.name }})
+    name: install from PyPI (${{ matrix.arch.name }})
     needs: [resolve, publish]
     if: always() && needs.publish.result == 'success'
     strategy:
@@ -363,14 +345,11 @@ jobs:
           ref: ${{ needs.resolve.outputs.ref }}
       - uses: actions/setup-python@v5
         with: { python-version: "3.12" }
-      - name: Install the published version from the index and convert a log
-        env:
-          INDEX: ${{ needs.resolve.outputs.index }}
+      - name: Install the published version from PyPI and convert a log
         run: |
           set -euo pipefail
           version=$(python3 tools/bump_version.py --current)
           simple=https://pypi.org/simple/
-          if [ "$INDEX" = testpypi ]; then simple=https://test.pypi.org/simple/; fi
           python -m venv /tmp/user
           # An index can take a few minutes to serve a new upload.
           for attempt in 1 2 3 4 5 6 7 8 9 10; do
@@ -391,7 +370,7 @@ jobs:
   github-release:
     name: publish the GitHub release
     needs: [resolve, publish]
-    if: always() && needs.publish.result == 'success' && needs.resolve.outputs.index == 'pypi'
+    if: always() && needs.publish.result == 'success' && needs.resolve.outputs.tag != ''
     runs-on: ubuntu-24.04
     permissions:
       contents: write
