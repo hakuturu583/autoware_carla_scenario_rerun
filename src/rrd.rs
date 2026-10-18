@@ -19,6 +19,9 @@
 //! | `world/traffic_lights/stops` | their stop-line waypoints (static `Points3D`) |
 //! | `world/traffic_lights/states` | the state changes, `TextLog` |
 //! | `conditions/<role>/<index>` | 1 while a pass/fail condition is satisfied, 0 while not (`condition` records, carried forward) |
+//! | `scenario/progress` | running, then the verdict (`StateChange`, for the state timeline view) |
+//! | `scenario/conditions/<role>/<index>` | satisfied / not satisfied, from the `condition` records (`StateChange`) |
+//! | `scenario/traffic_lights/<id>` | each light's state over time (`StateChange`) |
 //! | `result`, `result/log`, `result/passed` | the verdict |
 //! | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
 //! | `diagnostics/...` | what the conversion skipped or could not find, `TextLog` WARN (static) |
@@ -28,8 +31,8 @@ use std::path::Path;
 
 use rerun::{
     Arrows3D, Boxes3D, Color, LineStrips3D, Points3D, Quaternion, RecordingStream,
-    RecordingStreamBuilder, Scalars, SeriesLines, TextDocument, TextLog, TimeColumn,
-    ViewCoordinates,
+    RecordingStreamBuilder, Scalars, SeriesLines, StateChange, StateConfiguration, TextDocument,
+    TextLog, TimeColumn, ViewCoordinates,
 };
 
 use crate::generated as g;
@@ -49,6 +52,10 @@ const VEHICLE_COLOR: [u8; 3] = [64, 160, 255];
 const WALKER_COLOR: [u8; 3] = [255, 200, 0];
 const DRIVEN_PATH_COLOR: [u8; 3] = [255, 128, 0];
 const STOP_LINE_COLOR: [u8; 3] = [255, 255, 255];
+const RUNNING_COLOR: [u8; 3] = [64, 160, 255];
+const PASSED_COLOR: [u8; 3] = [0, 200, 80];
+const FAILED_COLOR: [u8; 3] = [230, 50, 50];
+const UNSATISFIED_COLOR: [u8; 3] = [90, 90, 90];
 
 fn rgb(c: [u8; 3]) -> Color {
     Color::from_rgb(c[0], c[1], c[2])
@@ -193,6 +200,9 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     if let Some(result) = result {
         write_result(&mut w, ticks, result)?;
     }
+    write_progress(&mut w, ticks, result)?;
+    write_condition_states(&mut w, &conditions)?;
+    write_light_states(&mut w, ticks)?;
     if let Some(map) = &inputs.map {
         write_map(&mut w, map)?;
     }
@@ -778,6 +788,153 @@ fn write_result(w: &mut Writer, ticks: &Ticks, result: &g::ResultRecord) -> RrRe
         .columns_of_unit_batches()
         .map_err(err)?;
     w.columns("result/passed", &[frame], &[t], columns)
+}
+
+/// Logs `states` on `path` as a `StateChange` per row, with how the state
+/// timeline view shows each value (`(value, label, colour)`, static).
+fn write_states(
+    w: &mut Writer,
+    path: &str,
+    styles: &[(&str, String, [u8; 3])],
+    frames: &[i64],
+    times: &[f64],
+    states: Vec<String>,
+) -> RrResult<()> {
+    if frames.is_empty() {
+        return Ok(());
+    }
+    w.fixed(
+        path,
+        &StateConfiguration::new()
+            .with_values(styles.iter().map(|(v, _, _)| *v))
+            .with_labels(styles.iter().map(|(_, l, _)| l.as_str()))
+            .with_colors(styles.iter().map(|(_, _, c)| rgb(*c))),
+    )?;
+    let columns = StateChange::update_fields()
+        .with_state(states)
+        .columns_of_unit_batches()
+        .map_err(err)?;
+    w.columns(path, frames, times, columns)
+}
+
+/// The run as a whole: running from its first tick, then its verdict.
+fn write_progress(w: &mut Writer, ticks: &Ticks, result: Option<&g::ResultRecord>) -> RrResult<()> {
+    let (Some(&first), Some(&t0)) = (ticks.frame.first(), ticks.t.first()) else {
+        return Ok(());
+    };
+    let (mut frames, mut times, mut states) = (vec![first], vec![t0], vec!["running".to_string()]);
+    if let Some(result) = result {
+        let verdict = if result.passed { "passed" } else { "failed" };
+        // At the last tick: the run's verdict is what its end decided.
+        let (frame, t) = (*ticks.frame.last().unwrap(), *ticks.t.last().unwrap());
+        if frame == first {
+            states[0] = verdict.to_string();
+        } else {
+            frames.push(frame);
+            times.push(t);
+            states.push(verdict.to_string());
+        }
+    }
+    write_states(
+        w,
+        "scenario/progress",
+        &[
+            ("running", "running".into(), RUNNING_COLOR),
+            ("passed", "PASSED".into(), PASSED_COLOR),
+            ("failed", "FAILED".into(), FAILED_COLOR),
+        ],
+        &frames,
+        &times,
+        states,
+    )
+}
+
+/// Each pass/fail condition's state as the run checked it: a pass condition
+/// satisfied is green, a fail condition satisfied red.
+fn write_condition_states(
+    w: &mut Writer,
+    conditions: &BTreeMap<(String, u64), Vec<&g::ConditionRecord>>,
+) -> RrResult<()> {
+    for ((role, index), records) in conditions {
+        let label = &records[0].label;
+        let satisfied = if role == "fail" {
+            FAILED_COLOR
+        } else {
+            PASSED_COLOR
+        };
+        let (mut frames, mut times, mut states) = (Vec::new(), Vec::new(), Vec::new());
+        for r in records {
+            let state = if r.satisfied {
+                "satisfied"
+            } else {
+                "not_satisfied"
+            };
+            // Two records on a frame: the later is the state the tick ended in.
+            if frames.last() == Some(&r.frame.0) {
+                *states.last_mut().unwrap() = state.to_string();
+            } else {
+                frames.push(r.frame.0);
+                times.push(r.t);
+                states.push(state.to_string());
+            }
+        }
+        write_states(
+            w,
+            &format!("scenario/conditions/{role}/{index}"),
+            &[
+                ("satisfied", format!("satisfied: {label}"), satisfied),
+                (
+                    "not_satisfied",
+                    format!("not satisfied: {label}"),
+                    UNSATISFIED_COLOR,
+                ),
+            ],
+            &frames,
+            &times,
+            states,
+        )?;
+    }
+    Ok(())
+}
+
+/// Each traffic light's state, from the ticks that change one.
+fn write_light_states(w: &mut Writer, ticks: &Ticks) -> RrResult<()> {
+    type Lane = (Vec<i64>, Vec<f64>, Vec<String>);
+    let mut lanes: BTreeMap<u32, Lane> = BTreeMap::new();
+    for c in &ticks.lights {
+        let (frames, times, states) = lanes.entry(c.id).or_default();
+        frames.push(ticks.frame[c.tick as usize]);
+        times.push(ticks.t[c.tick as usize]);
+        states.push(c.state.to_string());
+    }
+    let names: Vec<(LightState, String)> = [
+        LightState::Red,
+        LightState::Yellow,
+        LightState::Green,
+        LightState::Off,
+        LightState::Unknown,
+    ]
+    .into_iter()
+    .map(|s| (s, s.to_string()))
+    .collect();
+    let styles: Vec<(&str, String, [u8; 3])> = names
+        .iter()
+        .map(|(s, name)| {
+            let [r, g_, b, _] = light_color(*s).to_array();
+            (name.as_str(), name.clone(), [r, g_, b])
+        })
+        .collect();
+    for (id, (frames, times, states)) in lanes {
+        write_states(
+            w,
+            &format!("scenario/traffic_lights/{id}"),
+            &styles,
+            &frames,
+            &times,
+            states,
+        )?;
+    }
+    Ok(())
 }
 
 fn write_map(w: &mut Writer, map: &MapLayer<'_>) -> RrResult<()> {

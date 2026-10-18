@@ -92,9 +92,16 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `world/traffic_lights` | the light heads as boxes, coloured by their state over time |
 | `world/traffic_lights/stops`, `world/traffic_lights/states` | stop-line waypoints; state changes (`TextLog`) |
 | `conditions/<pass\|fail>/<index>` | 1 while the condition is satisfied, on every tick from its first check |
+| `scenario/progress` | the run in the state timeline view (`StateChange`): `running` from the first tick, then `PASSED` / `FAILED` at the last |
+| `scenario/conditions/<pass\|fail>/<index>` | each condition `satisfied` / `not satisfied` (labelled with its name; a pass condition satisfied is green, a fail condition red) |
+| `scenario/traffic_lights/<id>` | each light's state (`Red`, `Yellow`, `Green`, ...) over time |
 | `result`, `result/log`, `result/passed` | the verdict (the `result` record, or `_result.json` for a version-1 log) |
 | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
 | `diagnostics/...` | what the conversion skipped or could not find |
+
+The viewer opens the `scenario/...` lanes in a state timeline view of their
+own: how the run went -- which condition held when, and how the lights
+changed -- along the same timelines as the rest.
 
 ### The map
 

@@ -119,6 +119,14 @@ def test_v1_log(v1_log: Path, tmp_path: Path, read_rrd, rrd_columns) -> None:
     red = 0xFF0000FF
     assert set(colors[0].tolist()) == {red}
 
+    # Each light's state for the state timeline view; the run fails at its end.
+    scenario = read_rrd(out, "/scenario/**")
+    lanes = {c.split(":")[0] for c in scenario.columns if c.endswith(":StateChange:state")}
+    ids = {r["id"] for r in records if r["type"] == "traffic_light"}
+    assert lanes == {"/scenario/progress"} | {f"/scenario/traffic_lights/{i}" for i in ids}
+    progress = cells(scenario, "/scenario/progress:StateChange:state")
+    assert [p[0] for p in progress] == ["running", "failed"]
+
 
 # ---------------------------------------------------------------------------
 # Version 2: every record type
@@ -167,6 +175,21 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
 
     result = read_rrd(out, ["/result/log", "/result/passed"])
     assert cells(result, "/result/passed:Scalars:scalars")[0][0] == 1.0
+
+    # The state timeline view: the run, its conditions and its lights.
+    scenario = read_rrd(out, "/scenario/**")
+
+    def states(entity: str) -> list[tuple[int, str]]:
+        column = f"/scenario/{entity}:StateChange:state"
+        return [(f, c[0]) for f, c in zip(scenario["frame"], scenario[column]) if c is not None]
+    assert states("progress") == [(100, "running"), (139, "passed")]
+    assert states("conditions/pass/0") == [(100, "not_satisfied"), (130, "satisfied")]
+    assert states("conditions/fail/0") == [(100, "not_satisfied")]
+    assert states("traffic_lights/9") == [(100, "Red"), (125, "Green")]
+    style = read_rrd(out, "/scenario/conditions/pass/0", index=None)
+    assert list(style["/scenario/conditions/pass/0:StateConfiguration:labels"][0]) == [
+        "satisfied: reached_goal", "not satisfied: reached_goal",
+    ]
     assert "PASSED" in cells(result, "/result/log:TextLog:text")[0][0]
 
     path = read_rrd(out, "/world/ego/driven_path", index=None)
