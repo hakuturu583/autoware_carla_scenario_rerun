@@ -164,7 +164,8 @@ came from. Both format versions convert:
   `actor_gone`, `markers`, `condition`, `action`, `result`. (`action` -- each
   action's lifecycle -- comes from
   [ACS#293](https://github.com/autowarefoundation/autoware_carla_scenario/pull/293),
-  not merged yet; `schema/SOURCE` names the commit vendored.)
+  merged into the version-2 branch, ACS#287, not yet on master;
+  `schema/SOURCE` names the commit vendored.)
 
 ### Updating the schema
 
