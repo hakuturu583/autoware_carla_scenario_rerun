@@ -403,8 +403,8 @@ def test_rerun_verifies_the_recordings(v1_log: Path, v2_log: Path, tmp_path: Pat
 
 
 def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None:
-    """The blueprint is in the file, active: a chase view on the ego, the
-    scenario's state timeline, and the rest in tabs."""
+    """The blueprint is in the file, active: a chase view on the ego and the
+    conditions' state timeline; the rest is left to the blueprint panel."""
     import subprocess
     import sys
 
@@ -417,7 +417,7 @@ def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None
     assert done.returncode == 0, done.stderr
     text = done.stdout
     assert f'StoreId(Blueprint, "autoware_carla_scenario", "{v2_log.name.split(".")[0]}.blueprint"), make_active: true' in text
-    assert text.count("ViewBlueprint:class_identifier") == 6
+    assert text.count("ViewBlueprint:class_identifier") == 2
     for expected in ("/world/ego/pose@Transform3D", "EyeControls3D:position", "EyeControls3D:look_target"):
         assert expected in text, expected
 

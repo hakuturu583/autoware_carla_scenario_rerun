@@ -1,12 +1,12 @@
 //! The viewer layout a recording opens with (its blueprint).
 //!
-//! Few views, each with one job:
+//! Two views, one above the other; everything else is a click away in the
+//! blueprint panel, which starts open:
 //!
 //! | view | what |
 //! |---|---|
 //! | `Ego` (3D) | the scene from behind the ego, following it (origin `world/ego/pose`) |
-//! | `Scenario` (state timeline) | `scenario/**`: the run, its conditions, its lights |
-//! | `Speed`, `Control`, `Result`, `Log` (tabs) | the ego's speed and control, the verdict, the events |
+//! | `Conditions` (state timeline) | `scenario/conditions/**`: when each pass/fail condition held |
 //!
 //! The blueprint is written with the blueprint archetypes directly: the Rust
 //! SDK's `Spatial3DView` cannot set the eye.
@@ -17,8 +17,8 @@ use rerun::external::re_sdk_types::blueprint::archetypes::{
     ViewContents, ViewportBlueprint,
 };
 use rerun::external::re_sdk_types::blueprint::components::{
-    ActiveTab, ColumnShare, ContainerKind, Eye3DKind, Fps, IncludedContent, PanelState,
-    QueryExpression, RootContainer, RowShare, TimelineName, ViewClass,
+    ContainerKind, Eye3DKind, Fps, IncludedContent, PanelState, QueryExpression, RootContainer,
+    RowShare, TimelineName, ViewClass,
 };
 use rerun::{RecordingStream, RecordingStreamBuilder};
 
@@ -84,32 +84,19 @@ impl Builder {
         Ok(path)
     }
 
-    fn container(
-        &mut self,
-        kind: ContainerKind,
-        contents: &[String],
-        shares: &[f32],
-        active: Option<&str>,
-    ) -> BpResult<(String, [u8; 16])> {
+    /// A column of `contents`, sized by `shares`; its id.
+    fn column(&mut self, contents: &[String], shares: &[f32]) -> BpResult<[u8; 16]> {
         self.next += 1;
         let (bytes, text) = id(self.next);
-        let path = format!("container/{text}");
-        let mut arch = ContainerBlueprint::new(kind)
-            .with_contents(contents.iter().map(|c| IncludedContent(c.as_str().into())));
-        match kind {
-            ContainerKind::Horizontal => {
-                arch = arch.with_col_shares(shares.iter().map(|s| ColumnShare((*s).into())));
-            }
-            ContainerKind::Vertical => {
-                arch = arch.with_row_shares(shares.iter().map(|s| RowShare((*s).into())));
-            }
-            _ => {}
-        }
-        if let Some(active) = active {
-            arch = arch.with_active_tab(ActiveTab(active.into()));
-        }
-        self.bp.log(path.as_str(), &arch).map_err(err)?;
-        Ok((path, bytes))
+        self.bp
+            .log(
+                format!("container/{text}"),
+                &ContainerBlueprint::new(ContainerKind::Vertical)
+                    .with_contents(contents.iter().map(|c| IncludedContent(c.as_str().into())))
+                    .with_row_shares(shares.iter().map(|s| RowShare((*s).into()))),
+            )
+            .map_err(err)?;
+        Ok(bytes)
     }
 }
 
@@ -150,34 +137,13 @@ pub fn send(
     } else {
         b.view("3D", "World", "/", &["/world/**", "/map/**"])?
     };
-    let scenario = b.view("StateTimeline", "Scenario", "/scenario", &["$origin/**"])?;
-    let speed = b.view("TimeSeries", "Speed", "/ego/speed_mps", &["$origin/**"])?;
-    let control = b.view("TimeSeries", "Control", "/ego/control", &["$origin/**"])?;
-    let result = b.view("TextDocument", "Result", "/result", &["$origin"])?;
-    let log = b.view(
-        "TextLog",
-        "Log",
-        "/",
-        &[
-            "/world/actors/events",
-            "/world/traffic_lights/states",
-            "/result/log",
-            "/diagnostics/**",
-        ],
+    let conditions = b.view(
+        "StateTimeline",
+        "Conditions",
+        "/scenario/conditions",
+        &["$origin/**"],
     )?;
-    let (tabs, _) = b.container(
-        ContainerKind::Tabs,
-        &[speed.clone(), control, result, log],
-        &[],
-        Some(&speed),
-    )?;
-    let (side, _) = b.container(
-        ContainerKind::Vertical,
-        &[scenario, tabs],
-        &[1.0, 1.0],
-        None,
-    )?;
-    let (_, root) = b.container(ContainerKind::Horizontal, &[scene, side], &[3.0, 2.0], None)?;
+    let root = b.column(&[scene, conditions], &[3.0, 1.0])?;
 
     let bp = &b.bp;
     bp.log(
@@ -188,13 +154,17 @@ pub fn send(
             .with_auto_views(false),
     )
     .map_err(err)?;
-    for panel in ["blueprint_panel", "selection_panel"] {
-        bp.log(
-            panel,
-            &PanelBlueprint::new().with_state(PanelState::Collapsed),
-        )
-        .map_err(err)?;
-    }
+    // The rest is in the blueprint panel, open, to be added from there.
+    bp.log(
+        "blueprint_panel",
+        &PanelBlueprint::new().with_state(PanelState::Expanded),
+    )
+    .map_err(err)?;
+    bp.log(
+        "selection_panel",
+        &PanelBlueprint::new().with_state(PanelState::Collapsed),
+    )
+    .map_err(err)?;
     bp.log(
         "time_panel",
         &TimePanelBlueprint::new()

@@ -102,19 +102,18 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 
 ### The layout
 
-A recording carries its blueprint, active when it opens:
+A recording carries its blueprint, active when it opens, with two views:
 
-- **Ego** (3D, the larger half): the scene from behind the ego, following
-  it -- the view's origin is `world/ego/pose`, the eye 14 m behind and 6 m
-  above it (still free to orbit);
-- **Scenario** (state timeline): `scenario/**` -- the run, which condition
-  held when, how the lights changed;
-- tabs: **Speed**, **Control**, **Result**, **Log** (the actor and light
-  events, the verdict, diagnostics).
+- **Ego** (3D, the top three quarters): the scene from behind the ego,
+  following it -- the view's origin is `world/ego/pose`, the eye 14 m behind
+  and 6 m above it (still free to orbit);
+- **Conditions** (state timeline): `scenario/conditions/**` -- which
+  condition held when.
 
-The blueprint and selection panels start collapsed, the time panel too (on
-`sim_time`). Everything else is still in the recording, a click away in the
-blueprint panel. Without an ego, the 3D view shows the world from above.
+Everything else -- speed, control, the verdict, the lights, the logs -- is
+in the recording, to be added from the blueprint panel, which starts open
+(the selection and time panels start collapsed, the time panel on
+`sim_time`). Without an ego, the 3D view shows the world from above.
 
 ### The map
 
