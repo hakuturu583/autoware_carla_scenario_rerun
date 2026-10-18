@@ -45,6 +45,16 @@ pub enum Error {
     Map { path: PathBuf, message: String },
     #[error("{}: {message}", path.display())]
     Rerun { path: PathBuf, message: String },
+    /// A field the schema does not define, in strict mode.
+    #[error("{}:{line}: unknown field `{field}` (strict mode)", path.display())]
+    UnknownField {
+        path: PathBuf,
+        line: u64,
+        field: String,
+    },
+    /// The conversion panicked (a bug): reported, so a batch goes on.
+    #[error("{}: the conversion panicked: {message}", path.display())]
+    Panic { path: PathBuf, message: String },
 }
 
 impl Error {
@@ -56,7 +66,9 @@ impl Error {
             | Error::UnknownType { path, .. }
             | Error::Result { path, .. }
             | Error::Map { path, .. }
-            | Error::Rerun { path, .. } => path,
+            | Error::Rerun { path, .. }
+            | Error::UnknownField { path, .. }
+            | Error::Panic { path, .. } => path,
         }
     }
 }
@@ -75,7 +87,7 @@ pub struct ConvertOptions {
     pub map_path: Option<PathBuf>,
     /// Draw no map.
     pub no_map: bool,
-    /// Fail on a record type the schema does not know.
+    /// Fail on a record type or a field the schema does not define.
     pub strict: bool,
     /// Parsing.
     pub parser: JsonParser,
@@ -109,6 +121,12 @@ pub struct Stats {
     pub unknown_types: BTreeMap<String, u64>,
     /// The first line of each skipped type.
     pub unknown_first_lines: BTreeMap<String, u64>,
+    /// Ignored fields the schema does not define (`record.field`): lines per field.
+    pub unknown_fields: BTreeMap<String, u64>,
+    /// The first line of each ignored field.
+    pub unknown_field_first_lines: BTreeMap<String, u64>,
+    /// Numbers written as `null` (NaN), taken as NaN.
+    pub null_numbers: u64,
     /// Warnings (also logged, and written under `diagnostics/` in the file).
     pub warnings: Vec<String>,
     pub rrd_bytes: u64,
@@ -182,6 +200,7 @@ pub fn read_result_json(path: &Path) -> Result<g::ResultRecord, Error> {
         message: e.to_string(),
     })?;
     Ok(g::ResultRecord {
+        extra: Default::default(),
         type_: serde_json::Value::String("result".into()),
         passed: r.passed,
         message: r.message,
@@ -195,6 +214,7 @@ pub fn read_result_json(path: &Path) -> Result<g::ResultRecord, Error> {
                 condition_type: c.condition_type,
                 satisfied: c.satisfied,
                 message: c.message,
+                extra: Default::default(),
             })
             .collect(),
     })
@@ -236,6 +256,11 @@ pub fn read(input: &Path, options: &ParseOptions) -> Result<Parsed, Error> {
             line: e.line,
             record_type,
         },
+        LineErrorKind::UnknownField(field) => Error::UnknownField {
+            path: input.to_path_buf(),
+            line: e.line,
+            field,
+        },
     })
 }
 
@@ -251,6 +276,14 @@ struct MapChoice {
     offset: Option<[f64; 3]>,
 }
 
+/// Which Lanelet2 map to draw, and how to place it.
+///
+/// The file: `map_path`, else the one the `map` record names (when it is on
+/// this machine), else one found under `map_dir`. The run's projection and
+/// offsets apply only when the file is the run's own -- its sha256 is the
+/// one the `map` record has; any other map (a version-1 log, another copy,
+/// an override) is read with its own `map_projector_info.yaml` and placed at
+/// its origin, with a warning when it is not the map the run recorded.
 fn choose_map(
     parsed: &Parsed,
     options: &ConvertOptions,
@@ -264,32 +297,19 @@ fn choose_map(
     for l in &parsed.records {
         match &l.record {
             Record::World(w) => world = world.or(Some(w)),
-            Record::Map(m) => record = record.or(Some(m)),
+            Record::Map(m) => record = record.or(Some(&**m)),
             _ => {}
         }
     }
     let name = carla_map_name(world, record);
     let recorded = record.and_then(|m| m.lanelet2.as_ref());
-    let (path, sha256) = if let Some(path) = &options.map_path {
-        (path.clone(), None)
+    let path = if let Some(path) = &options.map_path {
+        path.clone()
     } else if let Some(file) = recorded.filter(|f| Path::new(&f.path).is_file()) {
-        let same = std::fs::metadata(&file.path).is_ok_and(|m| m.len() == file.bytes);
-        if !same {
-            warnings.push((
-                "map".into(),
-                format!(
-                    "{} is not the size the run recorded ({} bytes): drawn anyway",
-                    file.path, file.bytes
-                ),
-            ));
-        }
-        (
-            PathBuf::from(&file.path),
-            same.then(|| file.sha256.to_string()),
-        )
+        PathBuf::from(&file.path)
     } else if let (Some(dir), Some(name)) = (&options.map_dir, &name) {
         match map::find_in_dir(dir, name) {
-            Some(path) => (path, None),
+            Some(path) => path,
             None => {
                 warnings.push((
                     "map".into(),
@@ -313,6 +333,30 @@ fn choose_map(
         }
         return None;
     };
+    // Only a recorded map has a hash to check; hashing is per file, once.
+    let sha256 = match recorded {
+        Some(_) => match map::file_sha256(&path) {
+            Ok(hash) => Some(hash),
+            Err(message) => {
+                warnings.push(("map".into(), format!("{message}: no map drawn")));
+                return None;
+            }
+        },
+        None => None,
+    };
+    let own = recorded.is_some_and(|f| sha256.as_deref() == Some(&*f.sha256));
+    if let (Some(file), false) = (recorded, own) {
+        warnings.push((
+            "map".into(),
+            format!(
+                "{} is not the Lanelet2 map the run recorded ({}, sha256 {}): drawn with its own projection, at its origin",
+                path.display(),
+                file.path,
+                *file.sha256
+            ),
+        ));
+    }
+    let record = record.filter(|_| own);
     let info = record
         .and_then(|m| m.projector_info.as_ref())
         .map(map::ProjectorInfo::from_json);
@@ -326,15 +370,10 @@ fn choose_map(
         info,
         opendrive.as_deref(),
     );
-    // The recorded offsets apply to the recorded map only.
-    let offset = (options.map_path.is_none())
-        .then(|| {
-            record.and_then(|m| {
-                m.mgrs_offset
-                    .map(|(ox, oy)| [ox, oy, m.z_offset.unwrap_or(0.0)])
-            })
-        })
-        .flatten();
+    let offset = record.and_then(|m| {
+        m.mgrs_offset
+            .map(|(ox, oy)| [ox, oy, m.z_offset.unwrap_or(0.0)])
+    });
     Some(MapChoice {
         path,
         sha256,
@@ -344,6 +383,9 @@ fn choose_map(
 }
 
 /// Converts `input` to the recording `output`.
+///
+/// The recording is written to a temporary file beside `output` and renamed
+/// over it once complete, so a failed conversion leaves no partial `.rrd`.
 pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<Stats, Error> {
     let start = Instant::now();
     let parse_options = ParseOptions {
@@ -381,6 +423,29 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
         stats.unknown_first_lines.insert(ty.clone(), u.first_line);
         warnings.push((format!("unknown_types/{ty}"), text));
     }
+    for (field, u) in &parsed.unknown_fields {
+        let text = format!(
+            "ignored unknown field `{field}` on {} line(s) (first at line {}): this converter reads format version {} of the trajectory log",
+            u.count,
+            u.first_line,
+            g::SCHEMA_VERSION
+        );
+        stats.unknown_fields.insert(field.clone(), u.count);
+        stats
+            .unknown_field_first_lines
+            .insert(field.clone(), u.first_line);
+        warnings.push((format!("unknown_fields/{field}"), text));
+    }
+    if let Some(n) = parsed.nulls {
+        stats.null_numbers = n.count;
+        warnings.push((
+            "null_numbers".into(),
+            format!(
+                "{} number(s) were null (NaN when the log was written), first at line {}: drawn as NaN",
+                n.count, n.first_line
+            ),
+        ));
+    }
     if parsed.lines == 0 {
         warnings.push(("empty".into(), "the trajectory log is empty".into()));
     }
@@ -413,17 +478,12 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
 
     let map_start = Instant::now();
     let choice = choose_map(&parsed, options, &mut warnings);
-    let loaded = match &choice {
-        Some(c) => Some(
-            map::load(&c.path, &c.projection, c.sha256.as_deref()).map_err(|message| {
-                Error::Map {
-                    path: c.path.clone(),
-                    message,
-                }
-            })?,
-        ),
-        None => None,
-    };
+    // A map that cannot be read is a warning: the run is still worth seeing.
+    let loaded = choice.as_ref().and_then(|c| {
+        map::load(&c.path, &c.projection, c.sha256.as_deref())
+            .map_err(|message| warnings.push(("map".into(), format!("{message}: no map drawn"))))
+            .ok()
+    });
     stats.map_seconds = map_start.elapsed().as_secs_f64();
     let layer = match (&choice, &loaded) {
         (Some(c), Some(l)) => {
@@ -455,8 +515,9 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
         })?;
     }
     let recording_id = stem(input);
-    rrd::write(
-        output,
+    let partial = partial_path(output);
+    let written = rrd::write(
+        &partial,
         &parsed,
         &rrd::Inputs {
             recording_id: &recording_id,
@@ -468,11 +529,34 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
     .map_err(|message| Error::Rerun {
         path: output.to_path_buf(),
         message,
-    })?;
+    })
+    .and_then(|_| {
+        std::fs::rename(&partial, output).map_err(|source| Error::Io {
+            path: output.to_path_buf(),
+            source,
+        })
+    });
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&partial);
+        return Err(e);
+    }
     stats.write_seconds = write_start.elapsed().as_secs_f64();
     stats.rrd_bytes = std::fs::metadata(output).map(|m| m.len()).unwrap_or(0);
     stats.seconds = start.elapsed().as_secs_f64();
     Ok(stats)
+}
+
+/// The temporary file a recording is written to before it is renamed to
+/// `output`: hidden, beside it (the same file system), unique per process
+/// and conversion.
+fn partial_path(output: &Path) -> PathBuf {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let name = output
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    output.with_file_name(format!(".{name}.{}-{n}.partial", std::process::id()))
 }
 
 /// Every `*.trajectory.jsonl` under `dir` (recursively), sorted.
@@ -498,16 +582,25 @@ pub fn find_inputs(dir: &Path) -> Result<Vec<PathBuf>, Error> {
     Ok(found)
 }
 
+/// One file of [`convert_dir`]: its log, and how its conversion went.
+#[derive(Debug)]
+pub struct DirResult {
+    /// The trajectory log.
+    pub input: PathBuf,
+    pub result: Result<Stats, Error>,
+}
+
 /// Converts every trajectory log under `dir`, each to its [`default_output`]
 /// (under `out_dir` instead when given, keeping the layout), on `jobs`
 /// threads (all cores when `None`). Each file's `_result.json` is found
-/// beside it. One result per file, in [`find_inputs`] order.
+/// beside it. One result per file, in [`find_inputs`] order; a file that
+/// fails -- or panics -- is reported and the others still convert.
 pub fn convert_dir(
     dir: &Path,
     out_dir: Option<&Path>,
     options: &ConvertOptions,
     jobs: Option<usize>,
-) -> Result<Vec<Result<Stats, Error>>, Error> {
+) -> Result<Vec<DirResult>, Error> {
     let inputs = find_inputs(dir)?;
     let options = ConvertOptions {
         result_json: None,
@@ -522,7 +615,24 @@ pub fn convert_dir(
                     let rel = output.strip_prefix(dir).unwrap_or(&output).to_path_buf();
                     output = out_dir.join(rel);
                 }
-                convert(input, &output, &options)
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    convert(input, &output, &options)
+                }))
+                .unwrap_or_else(|panic| {
+                    let message = panic
+                        .downcast_ref::<&str>()
+                        .map(|s| s.to_string())
+                        .or_else(|| panic.downcast_ref::<String>().cloned())
+                        .unwrap_or_else(|| "a panic".to_string());
+                    Err(Error::Panic {
+                        path: input.clone(),
+                        message,
+                    })
+                });
+                DirResult {
+                    input: input.clone(),
+                    result,
+                }
             })
             .collect()
     };
@@ -553,5 +663,23 @@ mod tests {
         );
         assert_eq!(default_output(Path::new("x.jsonl")), Path::new("x.rrd"));
         assert_eq!(stem(Path::new("/o/Case-1.trajectory.jsonl")), "Case-1");
+    }
+
+    #[test]
+    fn a_failed_write_leaves_no_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("x.trajectory.jsonl");
+        std::fs::write(&input, "{\"type\":\"world\",\"map\":\"M\",\"episode\":1}\n").unwrap();
+        // The output is a directory: the rename fails after the write.
+        let output = dir.path().join("x.rrd");
+        std::fs::create_dir(&output).unwrap();
+        std::fs::write(output.join("keep"), "").unwrap();
+        assert!(convert(&input, &output, &ConvertOptions::default()).is_err());
+        let left: Vec<_> = std::fs::read_dir(dir.path())
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name())
+            .collect();
+        assert_eq!(left.len(), 2, "{left:?}");
     }
 }

@@ -3,8 +3,11 @@ dataframe API."""
 
 from __future__ import annotations
 
+import concurrent.futures
 import json
 import logging
+import multiprocessing
+import pickle
 import math
 import shutil
 import threading
@@ -366,3 +369,162 @@ def test_rerun_verifies_the_recordings(v1_log: Path, v2_log: Path, tmp_path: Pat
         pytest.skip("no rerun executable beside the interpreter")
     done = subprocess.run([str(rerun), "rrd", "verify", *map(str, outs)], capture_output=True, text=True)
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+# ---------------------------------------------------------------------------
+# Forward compatibility: fields the schema does not define, nulls
+# ---------------------------------------------------------------------------
+
+
+def test_unknown_fields_warn_and_convert(tmp_path: Path, caplog, read_rrd) -> None:
+    records = v2_records(ticks=6)
+    records[0]["weather"] = "rain"  # world
+    records[1]["lanelet2"]["mtime"] = 3  # map -> FileRef
+    for r in records:
+        if r["type"] == "tick":
+            r["gnss"] = [1, 2]
+    log = write_log(tmp_path / "New.trajectory.jsonl", records)
+    ticks_from = next(i for i, r in enumerate(records) if r["type"] == "tick") + 1
+    with caplog.at_level(logging.WARNING, logger=acsr.LOGGER_NAME):
+        stats = acsr.convert(log, tmp_path / "New.rrd")
+    assert stats["ticks"] == 6
+    assert stats["unknown_fields"] == {"map.lanelet2.mtime": 1, "tick.gnss": 6, "world.weather": 1}
+    assert stats["unknown_field_first_lines"] == {"map.lanelet2.mtime": 2, "tick.gnss": ticks_from, "world.weather": 1}
+    messages = [r.getMessage() for r in caplog.records if r.name == acsr.LOGGER_NAME]
+    assert sum("`tick.gnss` on 6 line(s)" in m for m in messages) == 1
+    diag = read_rrd(tmp_path / "New.rrd", "/diagnostics/**", index=None)
+    assert "world.weather" in diag["/diagnostics/unknown_fields/world.weather:TextLog:text"][0][0]
+    with pytest.raises(acsr.UnknownFieldError) as info:
+        acsr.convert(log, tmp_path / "New.rrd", strict=True)
+    assert (info.value.line, info.value.field) == (1, "world.weather")
+
+
+def test_null_numbers_are_nan(tmp_path: Path, read_rrd) -> None:
+    records = v2_records(ticks=4)
+    tick = next(r for r in records if r["type"] == "tick" and r["frame"] == 102)
+    tick["actors"][0][7] = None  # vx, as orjson writes NaN
+    tick["actors"][0][1] = None
+    log = write_log(tmp_path / "Nan.trajectory.jsonl", records)
+    stats = acsr.convert(log, tmp_path / "Nan.rrd")
+    assert stats["null_numbers"] == 2 and stats["ticks"] == 4
+    assert any("null" in w for w in stats["warnings"])
+    df = read_rrd(tmp_path / "Nan.rrd", "/world/actors/velocity")
+    row = df[df["frame"] == 102]["/world/actors/velocity:Arrows3D:vectors"].iloc[0]
+    assert math.isnan(row[0][0])
+
+
+# ---------------------------------------------------------------------------
+# Which map, and how it is placed
+# ---------------------------------------------------------------------------
+
+
+def test_another_map_is_placed_by_itself(tmp_path: Path, read_rrd) -> None:
+    other = tmp_path / "maps" / "TestTown" / "lanelet2_map.osm"
+    other.parent.mkdir(parents=True)
+    other.write_text(TEST_MAP.read_text().replace("<!--", "<!-- another copy;"))
+    (other.parent / "map_projector_info.yaml").write_text("projector_type: Local\n")
+    log = write_log(tmp_path / "o.trajectory.jsonl", v2_records(ticks=3))
+    for kwargs in ({"map_path": other}, {}):
+        if not kwargs:
+            # The recorded file is gone: map_dir finds the other copy.
+            records = v2_records(ticks=3)
+            records[1]["lanelet2"]["path"] = "/nowhere/lanelet2_map.osm"
+            log = write_log(tmp_path / "o.trajectory.jsonl", records)
+            kwargs = {"map_dir": tmp_path / "maps"}
+        stats = acsr.convert(log, tmp_path / "o.rrd", **kwargs)
+        assert stats["map"] == str(other)
+        assert any("is not the Lanelet2 map the run recorded" in w for w in stats["warnings"]), stats["warnings"]
+        lanes = read_rrd(tmp_path / "o.rrd", "/map/lanelet2/**", index=None)
+        # Not shifted by the run's mgrs_offset/z_offset (10, 20, 1): its own origin.
+        first = lanes["/map/lanelet2/lane_boundaries:LineStrips3D:strips"][0][1][0]
+        assert np.allclose(first, [0.0, 0.0, 0.0], atol=1e-4)
+
+
+def test_an_unreadable_map_is_a_warning(tmp_path: Path) -> None:
+    broken = tmp_path / "broken" / "TestTown" / "lanelet2_map.osm"
+    broken.parent.mkdir(parents=True)
+    broken.write_text("<osm><node id='1' lat='0' lon='0'></way></osm>")
+    log = write_log(tmp_path / "b.trajectory.jsonl", v2_records(ticks=3))
+    stats = acsr.convert(log, tmp_path / "b.rrd", map_path=broken)
+    assert stats["map"] is None and stats["ticks"] == 3
+    assert any("no map drawn" in w for w in stats["warnings"])
+    # Not remembered: once the file is fixed, the next conversion draws it.
+    shutil.copy(TEST_MAP, broken)
+    assert acsr.convert(log, tmp_path / "b.rrd", map_path=broken)["map"] == str(broken)
+
+
+# ---------------------------------------------------------------------------
+# Errors: what they say, that they pickle, and that nothing half-written stays
+# ---------------------------------------------------------------------------
+
+
+def test_errors_pickle_with_their_attributes(tmp_path: Path) -> None:
+    log = write_log(tmp_path / "bad.trajectory.jsonl", v2_records(ticks=2), ["{oops"])
+    with pytest.raises(acsr.MalformedLineError) as info:
+        acsr.convert(log, tmp_path / "bad.rrd")
+    again = pickle.loads(pickle.dumps(info.value))
+    assert type(again) is acsr.MalformedLineError
+    assert (again.line, again.input, again.path, str(again)) == (
+        info.value.line, str(log), str(log), str(info.value))
+    # Raised in a worker process, it arrives whole.
+    context = multiprocessing.get_context("spawn")
+    with concurrent.futures.ProcessPoolExecutor(1, mp_context=context) as pool:
+        with pytest.raises(acsr.MalformedLineError) as remote:
+            pool.submit(acsr.convert, str(log), str(tmp_path / "bad.rrd")).result()
+        assert remote.value.line == info.value.line
+        good = write_log(tmp_path / "good.trajectory.jsonl", v2_records(ticks=2))
+        stats = pool.submit(acsr.convert, str(good), str(tmp_path / "good.rrd")).result()
+        assert stats["ticks"] == 2
+    log2 = write_log(tmp_path / "s.trajectory.jsonl", v2_records(ticks=2), ['{"type":"x"}'])
+    with pytest.raises(acsr.UnknownRecordTypeError) as info2:
+        acsr.convert(log2, strict=True)
+    again = pickle.loads(pickle.dumps(info2.value))
+    assert (again.record_type, again.line) == ("x", info2.value.line)
+
+
+def test_failures_name_the_log_and_the_file_at_fault(tmp_path: Path) -> None:
+    runs = tmp_path / "runs"
+    log = write_log(runs / "R-1.trajectory.jsonl", v2_records(ticks=2)[:4] + v2_records(ticks=2)[4:-1])
+    (runs / "R-1_result.json").write_text("{not json")
+    results = acsr.convert_dir(runs, no_map=True)
+    (failure,) = results
+    assert not failure["ok"] and failure["error_type"] == "ConversionError"
+    assert failure["input"] == str(log)
+    assert failure["error_path"] == str(runs / "R-1_result.json")
+    with pytest.raises(acsr.ConversionError) as info:
+        acsr.convert(log, no_map=True)
+    assert info.value.input == str(log) and info.value.path == str(runs / "R-1_result.json")
+
+
+def test_no_partial_recording_is_left(tmp_path: Path) -> None:
+    out = tmp_path / "x.rrd"
+    out.mkdir()
+    (out / "keep").write_text("")
+    log = write_log(tmp_path / "x.trajectory.jsonl", v2_records(ticks=2))
+    with pytest.raises(acsr.ConversionError):
+        acsr.convert(log, out)
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["x.rrd", "x.trajectory.jsonl"]
+
+
+# ---------------------------------------------------------------------------
+# actor_gone between written ticks
+# ---------------------------------------------------------------------------
+
+
+def test_actor_gone_takes_effect_at_its_own_frame(tmp_path: Path, read_rrd) -> None:
+    records = v2_records(ticks=30)
+    # The actor goes on frame 119, a tick the log left out (frame 119 has no
+    # tick record): its box goes then, not at frame 120.
+    for r in records:
+        if r["type"] == "actor_gone":
+            r["frame"], r["t"] = 119, 0.95
+    records = [r for r in records if not (r["type"] == "tick" and r["frame"] == 119)]
+    log = write_log(tmp_path / "g.trajectory.jsonl", records)
+    acsr.convert(log, tmp_path / "g.rrd", no_map=True)
+    df = read_rrd(tmp_path / "g.rrd", ["/world/actors", "/world/actors/events"])
+    at = df.set_index("frame")
+    assert len(at.loc[118, "/world/actors:Boxes3D:centers"]) == 3
+    assert len(at.loc[119, "/world/actors:Boxes3D:centers"]) == 2
+    assert list(at.loc[119, "/world/actors/events:TextLog:text"]) == ["gone 2 vehicle.tesla.model3"]
+    events = [e for c in df["/world/actors/events:TextLog:text"] if c is not None for e in c]
+    assert events.count("gone 2 vehicle.tesla.model3") == 1

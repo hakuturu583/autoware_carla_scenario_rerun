@@ -4,7 +4,6 @@
 
 ///A vehicle or walker that is no longer in the world (destroyed, or despawned by the traffic), written right before the first tick it is missing from (version 2). It is in no tick from then on.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct ActorGoneRecord {
     ///The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).
     pub frame: SafeUInt,
@@ -13,6 +12,8 @@ pub struct ActorGoneRecord {
     pub t: f64,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///A CARLA actor id, a uint32 in LibCarla.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
@@ -115,7 +116,6 @@ impl<'de> ::serde::Deserialize<'de> for ActorIdKey {
 }
 ///A vehicle or walker, written right before the first tick it appears in: the ones there when recording starts, and every one spawned later. `actor_gone` says when it went.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct ActorRecord {
     ///The bounding box centre's offset from the actor origin, in the actor's own frame, metres.
     pub center: Vector3,
@@ -128,6 +128,8 @@ pub struct ActorRecord {
     pub type_: ::serde_json::Value,
     ///The CARLA blueprint id; starts with "vehicle." or "walker.".
     pub type_id: ActorRecordTypeId,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///The CARLA blueprint id; starts with "vehicle." or "walker.".
 #[derive(::serde::Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -209,7 +211,6 @@ for ActorState {
 }
 ///A pass or fail condition's state on a tick, written when it changes (version 2): on the first tick it is checked, then whenever it goes from satisfied to not or back. The run checks its conditions in order and stops at the first that decides it, so the last tick may leave later conditions out.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct ConditionRecord {
     ///The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).
     pub frame: SafeUInt,
@@ -225,6 +226,8 @@ pub struct ConditionRecord {
     pub t: f64,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///Which list the condition is in: a pass condition ends the run passed, a fail condition failed.
 #[derive(
@@ -283,7 +286,6 @@ impl ::std::convert::TryFrom<::std::string::String> for ConditionRecordRole {
 }
 ///A condition's state when the run ended (`ConditionStatus`, without its details).
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct ConditionStatus {
     ///Its class name, e.g. "TimeoutCondition".
     pub condition_type: ::std::string::String,
@@ -295,10 +297,11 @@ pub struct ConditionStatus {
     pub role: ::std::string::String,
     ///Whether it was satisfied when the run ended.
     pub satisfied: bool,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///A file the run read: where it was, and what it held.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct FileRef {
     ///Its size in bytes.
     pub bytes: u64,
@@ -306,6 +309,8 @@ pub struct FileRef {
     pub path: ::std::string::String,
     ///The SHA-256 of its bytes, lowercase hex.
     pub sha256: FileRefSha256,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///The SHA-256 of its bytes, lowercase hex.
 #[derive(::serde::Serialize, Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -385,7 +390,6 @@ impl ::std::convert::From<(f64, f64, f64, f64, f64, f64, f64)> for LightBox {
 }
 ///The map files the run read, written once, right after `world` (version 2). Each file is named and hashed, so a reader can find the very map the run was on and tell it from another; a field is null when the run had none.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct MapRecord {
     ///The Lanelet2 map (.osm) the run read, or null when it read none.
     #[serde(deserialize_with = "::std::option::Option::deserialize")]
@@ -414,10 +418,11 @@ pub struct MapRecord {
     ///The Lanelet2 map's elevation over CARLA's: z_map = z + z_offset, metres. Null when no Lanelet2 map was loaded.
     #[serde(deserialize_with = "::std::option::Option::deserialize")]
     pub z_offset: ::std::option::Option<f64>,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. They are what the video draws over the frames of the scenario.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct MarkersRecord {
     ///The ego actor they belong to, or null when there was no ego actor on that tick.
     #[serde(deserialize_with = "::std::option::Option::deserialize")]
@@ -430,10 +435,11 @@ pub struct MarkersRecord {
     pub t: f64,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///A line through `points`, in CARLA's world frame (`DebugPolyline`).
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct Polyline {
     ///Its colour.
     pub color: Rgb,
@@ -443,10 +449,11 @@ pub struct Polyline {
     pub points: ::std::vec::Vec<Vector3>,
     ///Its thickness, metres.
     pub thickness: f64,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///The run's verdict, the last line of a run that ended with one (version 2): what _result.json says, but for each condition's details. A run that raised (or was interrupted) has none.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct ResultRecord {
     ///Every condition's final status, as _result.json lists them.
     pub conditions: ::std::vec::Vec<ConditionStatus>,
@@ -458,6 +465,8 @@ pub struct ResultRecord {
     pub passed: bool,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///[r, g, b], each 0-255.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
@@ -544,7 +553,6 @@ impl ::std::convert::From<(f64, f64, f64, f64)> for StopWaypoint {
 }
 ///The world right after one `world.tick()` (20 Hz). A tick without any vehicle or walker is not written, so `frame` and `t` can skip.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct TickRecord {
     ///Every recorded vehicle and walker in the snapshot.
     pub actors: ::std::vec::Vec<ActorState>,
@@ -559,10 +567,11 @@ pub struct TickRecord {
     pub t: f64,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///A traffic light of the world, written once when recording starts.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct TrafficLightRecord {
     ///One box per light head. May be empty when CARLA could not tell.
     pub boxes: ::std::vec::Vec<LightBox>,
@@ -575,6 +584,8 @@ pub struct TrafficLightRecord {
     pub stops: ::std::vec::Vec<StopWaypoint>,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///A `carla.TrafficLightState` member's name.
 #[derive(
@@ -788,7 +799,6 @@ impl ::std::convert::From<(f64, f64, f64, i64)> for VehicleControl {
 }
 ///Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording (and the video rendered from it) starts `ticks` frames earlier.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct WarmupRecord {
     ///The CARLA frame the scenario clock started at: the frame of the first tick record, at t = 0.
     pub end_frame: SafeUInt,
@@ -799,10 +809,11 @@ pub struct WarmupRecord {
     pub ticks: u64,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 ///The first line of the file: the world the run recorded.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
-#[serde(deny_unknown_fields)]
 pub struct WorldRecord {
     ///The CARLA episode id (`world.id`): a random uint64 in LibCarla, so up to 2^64 - 1 -- past what a double holds exactly: read it as a 64-bit unsigned integer (JavaScript: a BigInt-aware parser). It only tells episodes apart.
     pub episode: UInt64,
@@ -813,6 +824,8 @@ pub struct WorldRecord {
     pub schema_version: ::std::option::Option<::std::num::NonZeroU64>,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
 /// Error types.
 pub mod error {
@@ -846,7 +859,6 @@ pub mod error {
         }
     }
 }
-
 /// Every record of the schema: its `type` on the wire and its generated type.
 pub const RECORD_TYPES: &[(&str, &str)] = &[
     ("world", "WorldRecord"),
@@ -862,3 +874,117 @@ pub const RECORD_TYPES: &[(&str, &str)] = &[
 ];
 /// The format version the schema describes (`x-schema-version`).
 pub const SCHEMA_VERSION: u64 = 2;
+/// The fields of a record the schema does not define (they are kept in
+/// `extra`), by dotted path: `out` is called once per field.
+pub trait UnknownFields {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String));
+}
+impl<T: UnknownFields> UnknownFields for ::std::option::Option<T> {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        if let Some(v) = self {
+            v.unknown_fields(path, out)
+        }
+    }
+}
+impl<T: UnknownFields> UnknownFields for ::std::vec::Vec<T> {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for v in self {
+            v.unknown_fields(path, out)
+        }
+    }
+}
+impl UnknownFields for ActorGoneRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for ActorRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for ConditionRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for ConditionStatus {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for FileRef {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for MapRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+        self.lanelet2.unknown_fields(&format!("{path}.lanelet2"), out);
+        self.opendrive.unknown_fields(&format!("{path}.opendrive"), out);
+    }
+}
+impl UnknownFields for MarkersRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+        self.polylines.unknown_fields(&format!("{path}.polylines"), out);
+    }
+}
+impl UnknownFields for Polyline {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for ResultRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+        self.conditions.unknown_fields(&format!("{path}.conditions"), out);
+    }
+}
+impl UnknownFields for TickRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for TrafficLightRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for WarmupRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for WorldRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}

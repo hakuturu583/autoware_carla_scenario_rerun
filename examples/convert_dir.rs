@@ -31,7 +31,7 @@ fn main() {
         let (mut bytes, mut lines, mut ticks, mut rrd, mut busy) = (0u64, 0u64, 0u64, 0u64, 0f64);
         let mut failed = 0;
         for r in &results {
-            match r {
+            match &r.result {
                 Ok(s) => {
                     bytes += s.bytes;
                     lines += s.lines;

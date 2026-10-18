@@ -3,6 +3,13 @@
 from os import PathLike
 from typing import Literal, TypedDict
 
+from ._errors import (
+    ConversionError as ConversionError,
+    MalformedLineError as MalformedLineError,
+    UnknownFieldError as UnknownFieldError,
+    UnknownRecordTypeError as UnknownRecordTypeError,
+)
+
 _Path = str | PathLike[str]
 _Parser = Literal["serde_json", "simd_json"]
 
@@ -45,6 +52,13 @@ class Stats(TypedDict):
     unknown_types: dict[str, int]
     #: The first line of each skipped type.
     unknown_first_lines: dict[str, int]
+    #: Ignored fields the schema does not define (``record.field``): lines
+    #: per field.
+    unknown_fields: dict[str, int]
+    #: The first line of each ignored field.
+    unknown_field_first_lines: dict[str, int]
+    #: Numbers written as null (orjson's NaN), drawn as NaN.
+    null_numbers: int
     warnings: list[str]
     rrd_bytes: int
     parse_seconds: float
@@ -52,29 +66,19 @@ class Stats(TypedDict):
     write_seconds: float
     seconds: float
 
-class Failure(TypedDict):
+class Failure(TypedDict, total=False):
     ok: Literal[False]
     error: str
-    #: ``ConversionError``, ``MalformedLineError`` or ``UnknownRecordTypeError``.
+    #: ``ConversionError``, ``MalformedLineError``, ``UnknownRecordTypeError``
+    #: or ``UnknownFieldError``.
     error_type: str
+    #: The trajectory log.
     input: str
-
-class ConversionError(RuntimeError):
-    """A trajectory log could not be converted."""
-
-    path: str
-
-class MalformedLineError(ConversionError):
-    """A line is not a record of the schema."""
-
-    #: 1-based.
+    #: The file at fault: the log, its ``_result.json``, the map or the
+    #: recording.
+    error_path: str
+    #: The line at fault, for a line error.
     line: int
-
-class UnknownRecordTypeError(ConversionError):
-    """``strict=True`` and the log has a record type the schema does not define."""
-
-    line: int
-    record_type: str
 
 def convert(
     jsonl: _Path,
@@ -101,15 +105,18 @@ def convert(
             the log's ``map`` record names no file on this machine.
         map_path: The Lanelet2 map to draw instead of the log's.
         no_map: Draw no map.
-        strict: Raise :class:`UnknownRecordTypeError` on a record type the
-            schema does not define, instead of skipping it with a warning.
+        strict: Raise :class:`UnknownRecordTypeError` on a record type, and
+            :class:`UnknownFieldError` on a field, the schema does not define,
+            instead of skipping it with a warning.
         parser: The JSON parser.
 
     Raises:
         MalformedLineError: A line is not a record of the schema.
         UnknownRecordTypeError: ``strict`` and an unknown record type.
-        ConversionError: The log, the result or the map could not be read, or
-            the recording could not be written.
+        UnknownFieldError: ``strict`` and an unknown field.
+        ConversionError: The log or the result could not be read, or the
+            recording could not be written (a map that cannot be read is a
+            warning). Every one of them carries ``input`` and ``path``.
     """
 
 def convert_dir(
@@ -127,7 +134,9 @@ def convert_dir(
     Each log is converted as :func:`convert` would with its defaults (its
     ``_result.json`` found beside it), ``jobs`` at a time (all cores when
     ``None``); a Lanelet2 map is read once for all of them. A log that fails
-    does not stop the others: its entry has ``ok`` false and the error.
+    does not stop the others (nor one that panics): its entry has ``ok``
+    false, the error, the log as ``input`` and the file at fault as
+    ``error_path``.
 
     Args:
         out_dir: Write the recordings here, keeping the directory layout,

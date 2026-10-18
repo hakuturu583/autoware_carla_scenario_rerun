@@ -5,20 +5,24 @@
 >>> results = convert_dir("outputs/2026-10-18/08-48-12", jobs=8)
 
 The work runs in Rust with the GIL released, so another thread (the next case
-of a sweep) keeps running while a log converts. Warnings -- record types this
-version does not know, a map it cannot find -- go to the ``logging`` logger
+of a sweep) keeps running while a log converts. Warnings -- record types and
+fields this version does not know, numbers written as null, a map it cannot
+find -- go to the ``logging`` logger
 ``autoware_carla_scenario_rerun``, into the returned stats, and into the
 recording under ``diagnostics/``.
 """
 
+from ._errors import (
+    ConversionError,
+    MalformedLineError,
+    UnknownFieldError,
+    UnknownRecordTypeError,
+)
 from ._native import (
     LOGGER_NAME,
     RECORD_TYPES,
     RERUN_VERSION,
     SCHEMA_VERSION,
-    ConversionError,
-    MalformedLineError,
-    UnknownRecordTypeError,
     __version__,
     clear_map_cache,
     convert,
@@ -32,6 +36,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "ConversionError",
     "MalformedLineError",
+    "UnknownFieldError",
     "UnknownRecordTypeError",
     "__version__",
     "clear_map_cache",

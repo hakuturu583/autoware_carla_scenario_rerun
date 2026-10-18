@@ -11,7 +11,7 @@
 //! | `info` | the run: map, episode, format version, warm-up (static markdown) |
 //! | `world/actors` | every vehicle and walker, a `Boxes3D` batch per tick; sizes, labels (`id type_id role`) and colours when the set of actors changes |
 //! | `world/actors/velocity` | their velocities, `Arrows3D` from the box centres |
-//! | `world/actors/events` | spawned / gone, `TextLog` |
+//! | `world/actors/events` | spawned / gone (at the `actor_gone` record's frame when there is one), `TextLog` |
 //! | `world/ego/driven_path` | the ego's path (static `LineStrips3D`, a point every 0.5 m) |
 //! | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (`markers` records), held until the next |
 //! | `ego/speed_mps`, `ego/control` | the ego's speed, and throttle/steer/brake (`Scalars`) |
@@ -148,6 +148,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     let mut actors: HashMap<u32, &g::ActorRecord> = HashMap::new();
     let mut lights: Vec<&g::TrafficLightRecord> = Vec::new();
     let mut markers: Vec<&g::MarkersRecord> = Vec::new();
+    let mut gone: Vec<&g::ActorGoneRecord> = Vec::new();
     let mut conditions: BTreeMap<(String, u64), Vec<&g::ConditionRecord>> = BTreeMap::new();
     let mut world = None;
     let mut map_record = None;
@@ -156,13 +157,13 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     for located in &parsed.records {
         match &located.record {
             Record::World(r) => world = world.or(Some(r)),
-            Record::Map(r) => map_record = map_record.or(Some(r)),
+            Record::Map(r) => map_record = map_record.or(Some(&**r)),
             Record::Warmup(r) => warmup = warmup.or(Some(r)),
             Record::TrafficLight(r) => lights.push(r),
             Record::Actor(r) => {
                 actors.entry(r.id.0).or_insert(r);
             }
-            Record::ActorGone(_) => {}
+            Record::ActorGone(r) => gone.push(r),
             Record::Markers(r) => markers.push(r),
             Record::Condition(r) => {
                 let role = match r.role {
@@ -182,7 +183,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     write_info(&mut w, parsed, world, map_record, warmup)?;
     let ticks = &parsed.ticks;
     let ego = ego_id(parsed, &actors);
-    write_actors(&mut w, ticks, &actors)?;
+    write_actors(&mut w, ticks, &actors, &gone)?;
     if let Some(ego) = ego {
         write_ego(&mut w, ticks, ego)?;
     }
@@ -285,100 +286,203 @@ fn actor_label(id: u32, a: Option<&g::ActorRecord>) -> String {
     }
 }
 
-fn write_actors(
-    w: &mut Writer,
-    ticks: &Ticks,
-    actors: &HashMap<u32, &g::ActorRecord>,
-) -> RrResult<()> {
-    let n = ticks.actor_id.len();
-    if n == 0 {
-        return Ok(());
-    }
-    let mut centers = Vec::with_capacity(n);
-    let mut quats = Vec::with_capacity(n);
-    let mut vectors = Vec::with_capacity(n);
-    let mut lengths = Vec::with_capacity(ticks.len());
-    // The ticks the set of actors changes on, and their sizes/labels/colours.
-    let (mut change_frames, mut change_times, mut change_lengths) =
-        (Vec::new(), Vec::new(), Vec::new());
-    let (mut half_sizes, mut labels, mut colors) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut ev_frames, mut ev_times, mut ev_texts) = (Vec::new(), Vec::new(), Vec::new());
-    let mut previous: &[u32] = &[];
-    for i in 0..ticks.len() {
-        let rows = ticks.actors(i);
-        lengths.push(rows.len());
-        for r in rows.clone() {
+/// The actor columns of one row of `world/actors`: the tick's rows, or (for
+/// an `actor_gone` between written ticks) the previous tick's, less the gone.
+struct ActorRows {
+    frames: Vec<i64>,
+    times: Vec<f64>,
+    lengths: Vec<usize>,
+    centers: Vec<[f32; 3]>,
+    quats: Vec<Quaternion>,
+    vectors: Vec<[f32; 3]>,
+    change_frames: Vec<i64>,
+    change_times: Vec<f64>,
+    change_lengths: Vec<usize>,
+    half_sizes: Vec<[f32; 3]>,
+    labels: Vec<String>,
+    colors: Vec<Color>,
+    ev_frames: Vec<i64>,
+    ev_times: Vec<f64>,
+    ev_texts: Vec<String>,
+    previous: Vec<u32>,
+}
+
+impl ActorRows {
+    fn row(
+        &mut self,
+        ticks: &Ticks,
+        actors: &HashMap<u32, &g::ActorRecord>,
+        (frame, t): (i64, f64),
+        rows: impl Iterator<Item = usize>,
+        recorded_gone: &std::collections::HashSet<u32>,
+    ) {
+        let mut ids = Vec::new();
+        for r in rows {
+            let id = ticks.actor_id[r];
             let [roll, pitch, yaw] = ticks.rotation[r];
             let q = quaternion(roll, pitch, yaw);
-            let offset = actors
-                .get(&ticks.actor_id[r])
-                .map_or([0.0; 3], |a| a.center.0.into());
+            let offset = actors.get(&id).map_or([0.0; 3], |a| a.center.0.into());
             let c = box_center(ticks.position[r], q, offset);
-            centers.push([c[0] as f32, c[1] as f32, c[2] as f32]);
-            quats.push(Quaternion::from_xyzw([
+            self.centers.push([c[0] as f32, c[1] as f32, c[2] as f32]);
+            self.quats.push(Quaternion::from_xyzw([
                 q[0] as f32,
                 q[1] as f32,
                 q[2] as f32,
                 q[3] as f32,
             ]));
-            vectors.push(point32(ticks.velocity[r]));
+            self.vectors.push(point32(ticks.velocity[r]));
+            ids.push(id);
         }
-        let ids = &ticks.actor_id[rows];
-        if ids != previous {
-            change_frames.push(ticks.frame[i]);
-            change_times.push(ticks.t[i]);
-            change_lengths.push(ids.len());
-            for id in ids {
-                let a = actors.get(id).copied();
-                let e = a.map_or([0.5; 3], |a| a.extent.0.into());
-                half_sizes.push([e[0] as f32, e[1] as f32, e[2] as f32]);
-                labels.push(actor_label(*id, a));
-                colors.push(actor_color(a));
-            }
-            // Spawned and gone, from who is on the road.
-            for id in ids.iter().filter(|id| !previous.contains(id)) {
-                ev_frames.push(ticks.frame[i]);
-                ev_times.push(ticks.t[i]);
-                ev_texts.push(format!(
-                    "spawned {}",
-                    actor_label(*id, actors.get(id).copied())
-                ));
-            }
-            for id in previous.iter().filter(|id| !ids.contains(id)) {
-                ev_frames.push(ticks.frame[i]);
-                ev_times.push(ticks.t[i]);
-                ev_texts.push(format!(
-                    "gone {}",
-                    actor_label(*id, actors.get(id).copied())
-                ));
-            }
-            previous = ids;
+        self.frames.push(frame);
+        self.times.push(t);
+        self.lengths.push(ids.len());
+        if ids == self.previous {
+            return;
         }
+        self.change_frames.push(frame);
+        self.change_times.push(t);
+        self.change_lengths.push(ids.len());
+        for id in &ids {
+            let a = actors.get(id).copied();
+            let e = a.map_or([0.5; 3], |a| a.extent.0.into());
+            self.half_sizes
+                .push([e[0] as f32, e[1] as f32, e[2] as f32]);
+            self.labels.push(actor_label(*id, a));
+            self.colors.push(actor_color(a));
+        }
+        // Spawned and gone, from who is on the road; an `actor_gone` record
+        // says when itself.
+        let spawned: Vec<u32> = ids
+            .iter()
+            .filter(|id| !self.previous.contains(id))
+            .copied()
+            .collect();
+        for id in spawned {
+            self.event(
+                frame,
+                t,
+                format!("spawned {}", actor_label(id, actors.get(&id).copied())),
+            );
+        }
+        let gone: Vec<u32> = self
+            .previous
+            .iter()
+            .filter(|id| !ids.contains(id) && !recorded_gone.contains(id))
+            .copied()
+            .collect();
+        for id in gone {
+            self.event(
+                frame,
+                t,
+                format!("gone {}", actor_label(id, actors.get(&id).copied())),
+            );
+        }
+        self.previous = ids;
+    }
+
+    fn event(&mut self, frame: i64, t: f64, text: String) {
+        self.ev_frames.push(frame);
+        self.ev_times.push(t);
+        self.ev_texts.push(text);
+    }
+}
+
+fn write_actors(
+    w: &mut Writer,
+    ticks: &Ticks,
+    actors: &HashMap<u32, &g::ActorRecord>,
+    gone: &[&g::ActorGoneRecord],
+) -> RrResult<()> {
+    let n = ticks.actor_id.len();
+    if n == 0 {
+        return Ok(());
+    }
+    let mut a = ActorRows {
+        frames: Vec::with_capacity(ticks.len()),
+        times: Vec::with_capacity(ticks.len()),
+        lengths: Vec::with_capacity(ticks.len()),
+        centers: Vec::with_capacity(n),
+        quats: Vec::with_capacity(n),
+        vectors: Vec::with_capacity(n),
+        change_frames: Vec::new(),
+        change_times: Vec::new(),
+        change_lengths: Vec::new(),
+        half_sizes: Vec::new(),
+        labels: Vec::new(),
+        colors: Vec::new(),
+        ev_frames: Vec::new(),
+        ev_times: Vec::new(),
+        ev_texts: Vec::new(),
+        previous: Vec::new(),
+    };
+    let recorded_gone: std::collections::HashSet<u32> = gone.iter().map(|g| g.id.0).collect();
+    let mut gone = gone.to_vec();
+    gone.sort_by_key(|g| g.frame.0);
+    let mut next_gone = 0;
+    for i in 0..ticks.len() {
+        let frame = ticks.frame[i];
+        // Gone on a tick the log left out (no vehicle or walker in it, or
+        // before this one): the box goes then, not at the next written tick.
+        while next_gone < gone.len() && gone[next_gone].frame.0 <= frame {
+            let record = gone[next_gone];
+            next_gone += 1;
+            let label = actor_label(record.id.0, actors.get(&record.id.0).copied());
+            a.event(record.frame.0, record.t, format!("gone {label}"));
+            if record.frame.0 < frame && i > 0 && a.previous.contains(&record.id.0) {
+                let left: Vec<usize> = ticks
+                    .actors(i - 1)
+                    .filter(|r| {
+                        let id = ticks.actor_id[*r];
+                        !gone[..next_gone]
+                            .iter()
+                            .any(|g| g.id.0 == id && g.frame.0 <= record.frame.0)
+                    })
+                    .collect();
+                a.row(
+                    ticks,
+                    actors,
+                    (record.frame.0, record.t),
+                    left.into_iter(),
+                    &recorded_gone,
+                );
+            }
+        }
+        a.row(
+            ticks,
+            actors,
+            (frame, ticks.t[i]),
+            ticks.actors(i),
+            &recorded_gone,
+        );
+    }
+    for record in &gone[next_gone..] {
+        let label = actor_label(record.id.0, actors.get(&record.id.0).copied());
+        a.event(record.frame.0, record.t, format!("gone {label}"));
     }
     let boxes = Boxes3D::update_fields()
-        .with_centers(centers.iter().copied())
-        .with_quaternions(quats)
-        .columns(lengths.iter().copied())
+        .with_centers(a.centers.iter().copied())
+        .with_quaternions(a.quats)
+        .columns(a.lengths.iter().copied())
         .map_err(err)?;
-    w.columns("world/actors", &ticks.frame, &ticks.t, boxes)?;
+    w.columns("world/actors", &a.frames, &a.times, boxes)?;
     let looks = Boxes3D::update_fields()
-        .with_half_sizes(half_sizes)
-        .with_labels(labels)
-        .with_colors(colors)
-        .columns(change_lengths.iter().copied())
+        .with_half_sizes(a.half_sizes)
+        .with_labels(a.labels)
+        .with_colors(a.colors)
+        .columns(a.change_lengths.iter().copied())
         .map_err(err)?;
-    w.columns("world/actors", &change_frames, &change_times, looks)?;
+    w.columns("world/actors", &a.change_frames, &a.change_times, looks)?;
     let arrows = Arrows3D::update_fields()
-        .with_origins(centers)
-        .with_vectors(vectors)
-        .columns(lengths.iter().copied())
+        .with_origins(a.centers)
+        .with_vectors(a.vectors)
+        .columns(a.lengths.iter().copied())
         .map_err(err)?;
-    w.columns("world/actors/velocity", &ticks.frame, &ticks.t, arrows)?;
+    w.columns("world/actors/velocity", &a.frames, &a.times, arrows)?;
     let events = TextLog::update_fields()
-        .with_many_text(ev_texts)
+        .with_many_text(a.ev_texts)
         .columns_of_unit_batches()
         .map_err(err)?;
-    w.columns("world/actors/events", &ev_frames, &ev_times, events)
+    w.columns("world/actors/events", &a.ev_frames, &a.ev_times, events)
 }
 
 fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {

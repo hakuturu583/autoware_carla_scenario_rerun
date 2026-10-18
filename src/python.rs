@@ -5,10 +5,8 @@
 //! Warnings go through the `log` crate to Python's `logging` (pyo3-log),
 //! under the logger `autoware_carla_scenario_rerun`.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
-use pyo3::create_exception;
-use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
 use pyo3::types::{PyDict, PyList};
 
@@ -16,47 +14,47 @@ use crate::convert as core;
 use crate::convert::{ConvertOptions, Error, Stats};
 use crate::parse::JsonParser;
 
-create_exception!(
-    _native,
-    ConversionError,
-    PyRuntimeError,
-    "A trajectory log could not be converted."
-);
-create_exception!(
-    _native,
-    MalformedLineError,
-    ConversionError,
-    "A line of the trajectory log is not a record of the schema (`.line` says which)."
-);
-create_exception!(
-    _native,
-    UnknownRecordTypeError,
-    ConversionError,
-    "strict=True and the log has a record type the schema does not define."
-);
-
-fn to_pyerr(py: Python<'_>, error: &Error) -> PyErr {
-    let message = error.to_string();
-    let err = match error {
-        Error::Parse { .. } => MalformedLineError::new_err(message),
-        Error::UnknownType { .. } => UnknownRecordTypeError::new_err(message),
-        _ => ConversionError::new_err(message),
+/// The Python class of an error (`_errors.py`), and the instance to raise,
+/// carrying `input` (the log converted) and `path` (the file at fault).
+fn to_pyerr(py: Python<'_>, input: &Path, error: &Error) -> PyErr {
+    let build = || -> PyResult<PyErr> {
+        let module = py.import("autoware_carla_scenario_rerun._errors")?;
+        let message = error.to_string();
+        let input = input.to_string_lossy().into_owned();
+        let path = error.path().to_string_lossy().into_owned();
+        let instance = match error {
+            Error::Parse { line, .. } => module
+                .getattr("MalformedLineError")?
+                .call1((message, input, path, *line))?,
+            Error::UnknownType {
+                line, record_type, ..
+            } => module.getattr("UnknownRecordTypeError")?.call1((
+                message,
+                input,
+                path,
+                *line,
+                record_type.clone(),
+            ))?,
+            Error::UnknownField { line, field, .. } => module
+                .getattr("UnknownFieldError")?
+                .call1((message, input, path, *line, field.clone()))?,
+            _ => module
+                .getattr("ConversionError")?
+                .call1((message, input, path))?,
+        };
+        Ok(PyErr::from_value(instance))
     };
-    let value = err.value(py);
-    let _ = value.setattr("path", error.path().to_string_lossy());
+    build().unwrap_or_else(|e| e)
+}
+
+/// The class name `to_pyerr` raises for `error`.
+fn error_type(error: &Error) -> &'static str {
     match error {
-        Error::Parse { line, .. } => {
-            let _ = value.setattr("line", *line);
-        }
-        Error::UnknownType {
-            line, record_type, ..
-        } => {
-            let _ = value.setattr("line", *line);
-            let _ = value.setattr("record_type", record_type.clone());
-        }
-        _ => {}
+        Error::Parse { .. } => "MalformedLineError",
+        Error::UnknownType { .. } => "UnknownRecordTypeError",
+        Error::UnknownField { .. } => "UnknownFieldError",
+        _ => "ConversionError",
     }
-    err
 }
 
 fn stats_dict<'py>(py: Python<'py>, s: &Stats) -> PyResult<Bound<'py, PyDict>> {
@@ -79,6 +77,12 @@ fn stats_dict<'py>(py: Python<'py>, s: &Stats) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("map_cached", s.map_cached)?;
     d.set_item("unknown_types", s.unknown_types.clone())?;
     d.set_item("unknown_first_lines", s.unknown_first_lines.clone())?;
+    d.set_item("unknown_fields", s.unknown_fields.clone())?;
+    d.set_item(
+        "unknown_field_first_lines",
+        s.unknown_field_first_lines.clone(),
+    )?;
+    d.set_item("null_numbers", s.null_numbers)?;
     d.set_item("warnings", s.warnings.clone())?;
     d.set_item("rrd_bytes", s.rrd_bytes)?;
     d.set_item("parse_seconds", s.parse_seconds)?;
@@ -126,7 +130,7 @@ fn convert<'py>(
     let result = py.detach(|| core::convert(&jsonl, &out, &options));
     match result {
         Ok(stats) => stats_dict(py, &stats),
-        Err(e) => Err(to_pyerr(py, &e)),
+        Err(e) => Err(to_pyerr(py, &jsonl, &e)),
     }
 }
 
@@ -153,17 +157,26 @@ fn convert_dir<'py>(
     };
     let results = py
         .detach(|| core::convert_dir(&output_dir, out_dir.as_deref(), &options, jobs))
-        .map_err(|e| to_pyerr(py, &e))?;
+        .map_err(|e| to_pyerr(py, &output_dir, &e))?;
     let list = PyList::empty(py);
-    for result in results {
-        match result {
-            Ok(stats) => list.append(stats_dict(py, &stats)?)?,
+    for one in results {
+        match &one.result {
+            Ok(stats) => list.append(stats_dict(py, stats)?)?,
             Err(e) => {
                 let d = PyDict::new(py);
                 d.set_item("ok", false)?;
                 d.set_item("error", e.to_string())?;
-                d.set_item("error_type", to_pyerr(py, &e).get_type(py).name()?)?;
-                d.set_item("input", e.path().to_string_lossy())?;
+                d.set_item("error_type", error_type(e))?;
+                // Always the log; the file at fault (a map, a result, the
+                // recording) is `error_path`.
+                d.set_item("input", one.input.to_string_lossy())?;
+                d.set_item("error_path", e.path().to_string_lossy())?;
+                if let Error::Parse { line, .. }
+                | Error::UnknownType { line, .. }
+                | Error::UnknownField { line, .. } = e
+                {
+                    d.set_item("line", *line)?;
+                }
                 list.append(d)?;
             }
         }
@@ -190,13 +203,6 @@ fn _native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(convert, m)?)?;
     m.add_function(wrap_pyfunction!(convert_dir, m)?)?;
     m.add_function(wrap_pyfunction!(clear_map_cache, m)?)?;
-    let py = m.py();
-    m.add("ConversionError", py.get_type::<ConversionError>())?;
-    m.add("MalformedLineError", py.get_type::<MalformedLineError>())?;
-    m.add(
-        "UnknownRecordTypeError",
-        py.get_type::<UnknownRecordTypeError>(),
-    )?;
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add("RERUN_VERSION", crate::RERUN_VERSION)?;
     m.add("SCHEMA_VERSION", crate::generated::SCHEMA_VERSION)?;

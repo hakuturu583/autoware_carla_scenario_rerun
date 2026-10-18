@@ -11,6 +11,14 @@
 //! `prefixItems` -> `additionalItems`. A closed tuple (`additionalItems:
 //! false`) also gets the `maxItems` it implies, which typify needs to see
 //! before it emits a Rust tuple. Nothing else changes.
+//!
+//! Then [`open_objects`] opens every closed object (`additionalProperties:
+//! false`): a newer ACS may add a field to a record, and the converter is
+//! to read the log anyway. typify gives each such struct an `extra` map
+//! (`#[serde(flatten)]`) instead of `deny_unknown_fields`, and [`generate`]
+//! adds an `UnknownFields` impl per struct that reports what landed in it, by
+//! dotted path (`map.lanelet2.size`), through the nested records too. The
+//! converter warns about those (or refuses them in strict mode).
 
 use std::path::PathBuf;
 
@@ -91,22 +99,155 @@ fn normalize_object(map: Map<String, Value>) -> Map<String, Value> {
     out
 }
 
+/// The field typify puts an open object's undeclared fields in.
+pub const EXTRA_FIELD: &str = "extra";
+
+/// Opens every closed object with declared properties
+/// (`additionalProperties: false` -> `{}`), returning the definitions opened.
+pub fn open_objects(schema: &mut Value) -> Result<Vec<String>, String> {
+    fn walk(value: &mut Value) -> Result<(), String> {
+        match value {
+            Value::Object(map) => {
+                if map.contains_key("properties")
+                    && map.get("additionalProperties") == Some(&Value::Bool(false))
+                {
+                    if map["properties"].get(EXTRA_FIELD).is_some() {
+                        return Err(format!(
+                            "a property is named `{EXTRA_FIELD}`, the field unknown ones go to"
+                        ));
+                    }
+                    map.insert("additionalProperties".into(), Value::Object(Map::new()));
+                }
+                map.values_mut().try_for_each(walk)
+            }
+            Value::Array(items) => items.iter_mut().try_for_each(walk),
+            _ => Ok(()),
+        }
+    }
+    walk(schema)?;
+    let mut opened: Vec<String> = schema["definitions"]
+        .as_object()
+        .map(|defs| {
+            defs.iter()
+                .filter(|(_, d)| {
+                    d.get("properties").is_some()
+                        && d.get("additionalProperties").is_some_and(Value::is_object)
+                })
+                .map(|(name, _)| name.clone())
+                .collect()
+        })
+        .unwrap_or_default();
+    opened.sort();
+    Ok(opened)
+}
+
+/// The opened definition a property refers to: directly, as the items of an
+/// array, or as one alternative of an `anyOf`/`oneOf` (`X` or null).
+fn referenced(property: &Value, opened: &[String]) -> Option<String> {
+    let target = |v: &Value| {
+        v["$ref"]
+            .as_str()
+            .and_then(|r| r.strip_prefix("#/definitions/"))
+            .filter(|name| opened.iter().any(|o| o == name))
+            .map(str::to_string)
+    };
+    target(property)
+        .or_else(|| target(&property["items"]))
+        .or_else(|| {
+            ["anyOf", "oneOf"].iter().find_map(|k| {
+                property[*k]
+                    .as_array()
+                    .and_then(|alts| alts.iter().find_map(target))
+            })
+        })
+}
+
+fn rust_field(name: &str) -> Result<String, String> {
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+    {
+        return Err(format!(
+            "property `{name}` is not snake_case: map its Rust name in xtask"
+        ));
+    }
+    const KEYWORDS: &[&str] = &[
+        "type", "match", "ref", "self", "struct", "enum", "fn", "mod", "use", "loop", "move",
+        "box", "where", "impl", "trait", "as", "in", "for", "if", "else", "let", "mut", "pub",
+        "return", "static", "const", "crate", "super", "true", "false", "while", "break",
+        "continue", "dyn", "async", "await", "unsafe", "extern", "override", "priv", "virtual",
+        "yield", "final", "macro", "abstract", "become", "do", "typeof", "unsized", "try",
+    ];
+    Ok(if KEYWORDS.contains(&name) {
+        format!("{name}_")
+    } else {
+        name.to_string()
+    })
+}
+
+/// The `UnknownFields` trait and its impls for the opened structs.
+fn unknown_fields_impls(
+    schema: &Value,
+    opened: &[String],
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut out = String::from(
+        "/// The fields of a record the schema does not define (they are kept in\n\
+         /// `extra`), by dotted path: `out` is called once per field.\n\
+         pub trait UnknownFields {\n\
+         \x20   fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String));\n\
+         }\n\
+         impl<T: UnknownFields> UnknownFields for ::std::option::Option<T> {\n\
+         \x20   fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {\n\
+         \x20       if let Some(v) = self { v.unknown_fields(path, out) }\n\
+         \x20   }\n\
+         }\n\
+         impl<T: UnknownFields> UnknownFields for ::std::vec::Vec<T> {\n\
+         \x20   fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {\n\
+         \x20       for v in self { v.unknown_fields(path, out) }\n\
+         \x20   }\n\
+         }\n",
+    );
+    for name in opened {
+        let def = &schema["definitions"][name];
+        let mut body = format!("        for key in self.{EXTRA_FIELD}.keys() {{\n            out(format!(\"{{path}}.{{key}}\"));\n        }}\n");
+        let mut props: Vec<(&String, &Value)> = def["properties"]
+            .as_object()
+            .map(|p| p.iter().collect())
+            .unwrap_or_default();
+        props.sort_by(|a, b| a.0.cmp(b.0));
+        for (prop, value) in props {
+            if referenced(value, opened).is_some() {
+                let field = rust_field(prop)?;
+                body.push_str(&format!(
+                    "        self.{field}.unknown_fields(&format!(\"{{path}}.{prop}\"), out);\n"
+                ));
+            }
+        }
+        out.push_str(&format!(
+            "impl UnknownFields for {name} {{\n    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {{\n{body}    }}\n}}\n"
+        ));
+    }
+    Ok(out)
+}
+
 /// Generates the Rust source of the record types from the schema's text.
 pub fn generate(schema_text: &str) -> Result<String, Box<dyn std::error::Error>> {
     let value: Value = serde_json::from_str(schema_text)?;
-    let normalized = normalize(value);
-    let tables = tables(&normalized)?;
+    let mut normalized = normalize(value);
+    let opened = open_objects(&mut normalized)?;
+    let tables = format!(
+        "{}{}",
+        tables(&normalized)?,
+        unknown_fields_impls(&normalized, &opened)?
+    );
     let root: schemars::schema::RootSchema = serde_json::from_value(normalized)?;
     let mut settings = typify::TypeSpaceSettings::default();
     settings.with_struct_builder(false);
     settings.with_derive("PartialEq".to_string());
     let mut space = typify::TypeSpace::new(&settings);
     space.add_root_schema(root)?;
-    let file: syn::File = syn::parse2(space.to_stream())?;
-    Ok(format!(
-        "{HEADER}\n{}\n{tables}",
-        prettyplease::unparse(&file)
-    ))
+    let file = syn::parse_file(&format!("{}\n{tables}", space.to_stream()))?;
+    Ok(format!("{HEADER}\n{}", prettyplease::unparse(&file)))
 }
 
 /// `RECORD_TYPES` and `SCHEMA_VERSION`: what the record types are called on
@@ -156,6 +297,32 @@ mod tests {
                 "oneOf": [{"$ref": "#/definitions/V"}]
             })
         );
+    }
+
+    #[test]
+    fn closed_objects_open_and_report_their_extras() {
+        let mut schema = json!({"definitions": {
+            "R": {"type": "object", "properties": {"f": {"anyOf": [{"$ref": "#/definitions/F"}, {"type": "null"}]}}, "additionalProperties": false},
+            "F": {"type": "object", "properties": {"p": {"type": "string"}}, "additionalProperties": false},
+            "M": {"type": "object", "additionalProperties": {"type": "string"}}
+        }});
+        let opened = open_objects(&mut schema).unwrap();
+        assert_eq!(opened, ["F", "R"]);
+        assert_eq!(
+            schema["definitions"]["R"]["additionalProperties"],
+            json!({})
+        );
+        assert_eq!(
+            schema["definitions"]["M"]["additionalProperties"],
+            json!({"type": "string"})
+        );
+        let code = unknown_fields_impls(&schema, &opened).unwrap();
+        assert!(
+            code.contains("self.f.unknown_fields(&format!(\"{path}.f\"), out);"),
+            "{code}"
+        );
+        let mut clash = json!({"definitions": {"R": {"properties": {"extra": {}}, "additionalProperties": false}}});
+        assert!(open_objects(&mut clash).is_err());
     }
 
     #[test]

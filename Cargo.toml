@@ -35,6 +35,7 @@ quick-xml = "0.42"
 thiserror = "2"
 log = "0.4"
 regress = "0.10"
+sha2 = "0.10"
 pyo3 = { version = "0.29", features = ["extension-module", "abi3-py310"], optional = true }
 pyo3-log = { version = "0.13", optional = true }
 

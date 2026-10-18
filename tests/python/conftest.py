@@ -3,6 +3,7 @@ back with Rerun's dataframe API."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 from collections.abc import Callable, Iterator
@@ -31,7 +32,11 @@ def v2_records(map_path: Path = TEST_MAP, ticks: int = 40) -> list[dict[str, Any
             "type": "map",
             "name": "TestTown",
             "source": "directory:tests/data/maps",
-            "lanelet2": {"path": str(map_path), "sha256": "0" * 64, "bytes": map_path.stat().st_size},
+            "lanelet2": {
+                "path": str(map_path),
+                "sha256": hashlib.sha256(map_path.read_bytes()).hexdigest(),
+                "bytes": map_path.stat().st_size,
+            },
             "opendrive": None,
             "projector_info": {"projector_type": "Local"},
             "projector_type": None,

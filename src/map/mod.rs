@@ -190,7 +190,9 @@ pub fn find_in_dir(dir: &Path, name: &str) -> Option<PathBuf> {
     own.is_file().then_some(own)
 }
 
-type Slot = Arc<OnceLock<Result<Arc<MapGeometry>, String>>>;
+/// A cached map: filled by the first conversion that reads it. A read that
+/// fails leaves it empty, so the next conversion tries again.
+type Slot = Arc<Mutex<Option<Arc<MapGeometry>>>>;
 
 fn cache() -> &'static Mutex<HashMap<String, Slot>> {
     static CACHE: OnceLock<Mutex<HashMap<String, Slot>>> = OnceLock::new();
@@ -206,47 +208,81 @@ pub struct LoadedMap {
     pub cached: bool,
 }
 
+/// A file's path, size and modification time: what tells it apart without
+/// reading it.
+fn identity(path: &Path) -> Result<String, String> {
+    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+        .map_or(0, |d| d.as_nanos());
+    Ok(format!("{}|{}|{mtime}", path.display(), meta.len()))
+}
+
+/// The SHA-256 of a file, lowercase hex: computed once per file (path, size
+/// and modification time) and process.
+pub fn file_sha256(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    static HASHES: OnceLock<Mutex<HashMap<String, String>>> = OnceLock::new();
+    let hashes = HASHES.get_or_init(Default::default);
+    let key = identity(path)?;
+    if let Some(hash) = hashes.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Ok(hash.clone());
+    }
+    let mut file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| format!("{}: {e}", path.display()))?;
+    let hash: String = hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    hashes
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, hash.clone());
+    Ok(hash)
+}
+
 /// Reads the Lanelet2 map at `path` with `projection`, once per process: the
-/// map is keyed by `sha256` when the caller knows it (the `map` record), else
-/// by the file's path, size and modification time, and by the projection.
-/// Concurrent callers wait for the first one's read.
+/// map is keyed by `sha256` when the caller knows it, else by the file's
+/// path, size and modification time, and by the projection. Concurrent
+/// callers wait for the first one's read; a read that fails is not
+/// remembered.
 pub fn load(
     path: &Path,
     projection: &Projection,
     sha256: Option<&str>,
 ) -> Result<LoadedMap, String> {
-    let meta = std::fs::metadata(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let identity = match sha256 {
         Some(hash) => format!("sha256:{hash}"),
-        None => {
-            let mtime = meta
-                .modified()
-                .ok()
-                .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
-                .map_or(0, |d| d.as_nanos());
-            format!("{}|{}|{mtime}", path.display(), meta.len())
-        }
+        None => identity(path)?,
     };
     let key = format!("{identity}|{projection:?}");
     let slot = {
         let mut map = cache().lock().unwrap_or_else(|e| e.into_inner());
         map.entry(key).or_default().clone()
     };
-    let mut read_here = false;
-    let result = slot.get_or_init(|| {
-        read_here = true;
-        let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        // SAFETY: the map is only read; a file truncated underneath would
-        // fault, as reading any file being rewritten would misbehave.
-        let bytes =
-            unsafe { memmap2::Mmap::map(&file) }.map_err(|e| format!("{}: {e}", path.display()))?;
-        osm::parse(&bytes, projection)
-            .map(Arc::new)
-            .map_err(|e| format!("{}: {e}", path.display()))
-    });
-    result.clone().map(|geometry| LoadedMap {
+    let mut held = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(geometry) = held.as_ref() {
+        return Ok(LoadedMap {
+            geometry: geometry.clone(),
+            cached: true,
+        });
+    }
+    let file = std::fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // SAFETY: the map is only read; a file truncated underneath would
+    // fault, as reading any file being rewritten would misbehave.
+    let bytes =
+        unsafe { memmap2::Mmap::map(&file) }.map_err(|e| format!("{}: {e}", path.display()))?;
+    let geometry = osm::parse(&bytes, projection)
+        .map(Arc::new)
+        .map_err(|e| format!("{}: {e}", path.display()))?;
+    *held = Some(geometry.clone());
+    Ok(LoadedMap {
         geometry,
-        cached: !read_here,
+        cached: false,
     })
 }
 
@@ -270,6 +306,37 @@ mod tests {
             "projector_type: TransverseMercator\nvertical_datum: WGS84\nmap_origin:\n  latitude: 35.5\n  longitude: 139.25\n  altitude: 3.0\n",
         );
         assert_eq!(info.map_origin, Some((35.5, 139.25, 3.0)));
+    }
+
+    #[test]
+    fn a_failed_read_is_not_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lanelet2_map.osm");
+        let projection = Projection {
+            projector: Projector::Local,
+            origin: (0.0, 0.0, 0.0),
+        };
+        std::fs::write(
+            &path,
+            "<osm><node id=\"1\" lat=\"0\" lon=\"0\"></way></osm>",
+        )
+        .unwrap();
+        assert!(load(&path, &projection, Some("same-hash")).is_err());
+        std::fs::write(&path, "<osm><node id=\"1\" lat=\"0\" lon=\"0\"/></osm>").unwrap();
+        let first = load(&path, &projection, Some("same-hash")).unwrap();
+        assert!(!first.cached && first.geometry.nodes == 1);
+        assert!(load(&path, &projection, Some("same-hash")).unwrap().cached);
+    }
+
+    #[test]
+    fn hashes_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("f");
+        std::fs::write(&path, "abc").unwrap();
+        assert_eq!(
+            file_sha256(&path).unwrap(),
+            "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
+        );
     }
 
     #[test]
