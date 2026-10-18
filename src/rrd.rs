@@ -12,6 +12,7 @@
 //! | `world/actors` | every vehicle and walker, a `Boxes3D` batch per tick; sizes, labels (`id type_id role`) and colours when the set of actors changes |
 //! | `world/actors/velocity` | their velocities, `Arrows3D` from the box centres |
 //! | `world/actors/events` | spawned / gone (at the `actor_gone` record's frame when there is one), `TextLog` |
+//! | `world/ego/pose` | the ego's position and yaw (`Transform3D`): the chase view follows it |
 //! | `world/ego/driven_path` | the ego's path (static `LineStrips3D`, a point every 0.5 m) |
 //! | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (`markers` records), held until the next |
 //! | `ego/speed_mps`, `ego/control` | the ego's speed, and throttle/steer/brake (`Scalars`) |
@@ -20,7 +21,7 @@
 //! | `world/traffic_lights/states` | the state changes, `TextLog` |
 //! | `conditions/<role>/<index>` | 1 while a pass/fail condition is satisfied, 0 while not (`condition` records, carried forward) |
 //! | `scenario/progress` | running, then the verdict (`StateChange`, for the state timeline view) |
-//! | `scenario/conditions/<role>/<index>_<label>` | satisfied / not satisfied, from the `condition` records (`StateChange`) |
+//! | `scenario/conditions/<role>/<label>` | satisfied / not satisfied, from the `condition` records (`StateChange`) |
 //! | `scenario/traffic_lights/<id>` | each light's state over time (`StateChange`) |
 //! | `result`, `result/log`, `result/passed` | the verdict |
 //! | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
@@ -32,7 +33,7 @@ use std::path::Path;
 use rerun::{
     Arrows3D, Boxes3D, Color, LineStrips3D, Points3D, Quaternion, RecordingStream,
     RecordingStreamBuilder, Scalars, SeriesLines, StateChange, StateConfiguration, TextDocument,
-    TextLog, TimeColumn, ViewCoordinates,
+    TextLog, TimeColumn, Transform3D, ViewCoordinates,
 };
 
 use crate::generated as g;
@@ -190,6 +191,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     write_info(&mut w, parsed, world, map_record, warmup)?;
     let ticks = &parsed.ticks;
     let ego = ego_id(parsed, &actors);
+    crate::layout::send(&w.rec, APPLICATION_ID, inputs.recording_id, ego.is_some())?;
     write_actors(&mut w, ticks, &actors, &gone)?;
     if let Some(ego) = ego {
         write_ego(&mut w, ticks, ego)?;
@@ -497,6 +499,7 @@ fn write_actors(
 
 fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {
     let (mut frames, mut times, mut speeds) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut translations, mut rotations) = (Vec::new(), Vec::new());
     let mut path: Vec<[f64; 3]> = Vec::new();
     for i in 0..ticks.len() {
         for r in ticks.actors(i) {
@@ -508,6 +511,16 @@ fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {
             times.push(ticks.t[i]);
             speeds.push((vx * vx + vy * vy + vz * vz).sqrt());
             let p = crate::scene::point(ticks.position[r]);
+            // The yaw alone: a chase eye that rolls and pitches with the car
+            // shakes.
+            let q = quaternion(0.0, 0.0, ticks.rotation[r][2]);
+            translations.push([p[0] as f32, p[1] as f32, p[2] as f32]);
+            rotations.push(Quaternion::from_xyzw([
+                q[0] as f32,
+                q[1] as f32,
+                q[2] as f32,
+                q[3] as f32,
+            ]));
             let far = path.last().is_none_or(|last| {
                 let d = [p[0] - last[0], p[1] - last[1], p[2] - last[2]];
                 (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() >= DRIVEN_PATH_STEP_M
@@ -517,6 +530,12 @@ fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {
             }
         }
     }
+    let pose = Transform3D::update_fields()
+        .with_many_translation(translations)
+        .with_many_quaternion(rotations)
+        .columns_of_unit_batches()
+        .map_err(err)?;
+    w.columns(crate::layout::EGO_POSE, &frames, &times, pose)?;
     w.columns(
         "ego/speed_mps",
         &frames,
@@ -849,15 +868,16 @@ fn write_progress(w: &mut Writer, ticks: &Ticks, result: Option<&g::ResultRecord
     )
 }
 
-/// A condition's lane, named after it (the view names a lane by its entity
-/// path): `scenario/conditions/pass/0_reached_goal`. What a path part would
-/// have to escape (spaces, brackets) becomes `_`.
-fn condition_lane(role: &str, index: u64, label: &str) -> String {
-    let mut name = index.to_string();
-    let mut gap = true;
+/// A condition's lane name: its label (the view names a lane by its entity
+/// path), with what a path part would have to escape -- spaces, brackets --
+/// as `_`: `ego stopped AND green` -> `ego_stopped_AND_green`. `None` for a
+/// label with nothing left.
+fn condition_lane(label: &str) -> Option<String> {
+    let mut name = String::new();
+    let mut gap = false;
     for c in label.chars() {
         if c.is_alphanumeric() || matches!(c, '-' | '.') {
-            if gap {
+            if gap && !name.is_empty() {
                 name.push('_');
             }
             name.push(c);
@@ -866,7 +886,7 @@ fn condition_lane(role: &str, index: u64, label: &str) -> String {
             gap = true;
         }
     }
-    format!("scenario/conditions/{role}/{name}")
+    (!name.is_empty()).then_some(name)
 }
 
 /// Each pass/fail condition's state as the run checked it: a pass condition
@@ -875,8 +895,23 @@ fn write_condition_states(
     w: &mut Writer,
     conditions: &BTreeMap<(String, u64), Vec<&g::ConditionRecord>>,
 ) -> RrResult<()> {
-    for ((role, index), records) in conditions {
-        let label = &records[0].label;
+    let names: Vec<Option<String>> = conditions
+        .values()
+        .map(|records| condition_lane(&records[0].label))
+        .collect();
+    for (((role, index), records), name) in conditions.iter().zip(&names) {
+        // Two conditions of a role with the same label: the index tells them apart.
+        let shared = conditions
+            .keys()
+            .zip(&names)
+            .filter(|((r, _), n)| r == role && *n == name)
+            .count()
+            > 1;
+        let lane = match name {
+            Some(name) if shared => format!("{name}_{index}"),
+            Some(name) => name.clone(),
+            None => index.to_string(),
+        };
         let satisfied = if role == "fail" {
             FAILED_COLOR
         } else {
@@ -900,7 +935,7 @@ fn write_condition_states(
         }
         write_states(
             w,
-            &condition_lane(role, *index, label),
+            &format!("scenario/conditions/{role}/{lane}"),
             &[
                 ("satisfied", "satisfied".into(), satisfied),
                 ("not_satisfied", "not satisfied".into(), UNSATISFIED_COLOR),
@@ -999,15 +1034,15 @@ mod tests {
     use super::condition_lane;
 
     #[test]
-    fn condition_lanes_are_named_after_their_conditions() {
+    fn condition_lanes_are_named_by_their_labels() {
         assert_eq!(
-            condition_lane("pass", 0, "reached_goal"),
-            "scenario/conditions/pass/0_reached_goal"
+            condition_lane("reached_goal").as_deref(),
+            Some("reached_goal")
         );
         assert_eq!(
-            condition_lane("fail", 2, "  ego stopped (in zone) AND green "),
-            "scenario/conditions/fail/2_ego_stopped_in_zone_AND_green"
+            condition_lane("  ego stopped (in zone) AND green ").as_deref(),
+            Some("ego_stopped_in_zone_AND_green")
         );
-        assert_eq!(condition_lane("pass", 1, ""), "scenario/conditions/pass/1");
+        assert_eq!(condition_lane(" () "), None);
     }
 }

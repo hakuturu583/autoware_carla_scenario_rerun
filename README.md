@@ -86,6 +86,7 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `world/actors` | every vehicle and walker, one `Boxes3D` batch per tick (centre and rotation each tick; sizes, `id type_id role` labels and colours whenever the set of actors changes) |
 | `world/actors/velocity` | their velocities (`Arrows3D` from the box centres) |
 | `world/actors/events` | spawned / gone (`TextLog`; gone at the `actor_gone` record's frame, the box too, even when that tick was not written) |
+| `world/ego/pose` | the ego's position and yaw (`Transform3D`), which the 3D view follows |
 | `world/ego/driven_path` | the ego's path, a point every 0.5 m (static) |
 | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (a planner's trajectory: `markers` records), held until the next record |
 | `ego/speed_mps`, `ego/control` | speed, and throttle / steer / brake (`Scalars`) |
@@ -93,15 +94,27 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `world/traffic_lights/stops`, `world/traffic_lights/states` | stop-line waypoints; state changes (`TextLog`) |
 | `conditions/<pass\|fail>/<index>` | 1 while the condition is satisfied, on every tick from its first check |
 | `scenario/progress` | the run in the state timeline view (`StateChange`): `running` from the first tick, then `PASSED` / `FAILED` at the last |
-| `scenario/conditions/<pass\|fail>/<index>_<label>` | each condition `satisfied` / `not satisfied`, its lane named after it (`pass/0_reached_goal`; what a path would have to escape becomes `_`); a pass condition satisfied is green, a fail condition red |
+| `scenario/conditions/<pass\|fail>/<label>` | each condition `satisfied` / `not satisfied`, its lane named by its label (`pass/reached_goal`; what a path would have to escape becomes `_`, and two conditions with one label get `_<index>`); a pass condition satisfied is green, a fail condition red |
 | `scenario/traffic_lights/<id>` | each light's state (`Red`, `Yellow`, `Green`, ...) over time |
 | `result`, `result/log`, `result/passed` | the verdict (the `result` record, or `_result.json` for a version-1 log) |
 | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
 | `diagnostics/...` | what the conversion skipped or could not find |
 
-The viewer opens the `scenario/...` lanes in a state timeline view of their
-own: how the run went -- which condition held when, and how the lights
-changed -- along the same timelines as the rest.
+### The layout
+
+A recording carries its blueprint, active when it opens:
+
+- **Ego** (3D, the larger half): the scene from behind the ego, following
+  it -- the view's origin is `world/ego/pose`, the eye 14 m behind and 6 m
+  above it (still free to orbit);
+- **Scenario** (state timeline): `scenario/**` -- the run, which condition
+  held when, how the lights changed;
+- tabs: **Speed**, **Control**, **Result**, **Log** (the actor and light
+  events, the verdict, diagnostics).
+
+The blueprint and selection panels start collapsed, the time panel too (on
+`sim_time`). Everything else is still in the recording, a click away in the
+blueprint panel. Without an ego, the 3D view shows the world from above.
 
 ### The map
 

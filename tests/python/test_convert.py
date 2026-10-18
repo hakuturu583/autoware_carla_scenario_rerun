@@ -183,14 +183,22 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
         column = f"/scenario/{entity}:StateChange:state"
         return [(f, c[0]) for f, c in zip(scenario["frame"], scenario[column]) if c is not None]
     assert states("progress") == [(100, "running"), (139, "passed")]
-    # A condition's lane is named after it.
-    assert states("conditions/pass/0_reached_goal") == [(100, "not_satisfied"), (130, "satisfied")]
-    assert states("conditions/fail/0_collision") == [(100, "not_satisfied")]
+    # A condition's lane is named by its label.
+    assert states("conditions/pass/reached_goal") == [(100, "not_satisfied"), (130, "satisfied")]
+    assert states("conditions/fail/collision") == [(100, "not_satisfied")]
     assert states("traffic_lights/9") == [(100, "Red"), (125, "Green")]
-    style = read_rrd(out, "/scenario/conditions/pass/0_reached_goal", index=None)
-    labels = style["/scenario/conditions/pass/0_reached_goal:StateConfiguration:labels"][0]
+    style = read_rrd(out, "/scenario/conditions/pass/reached_goal", index=None)
+    labels = style["/scenario/conditions/pass/reached_goal:StateConfiguration:labels"][0]
     assert list(labels) == ["satisfied", "not satisfied"]
     assert "PASSED" in cells(result, "/result/log:TextLog:text")[0][0]
+
+    # The ego's pose, which the chase view follows: its position and its yaw.
+    pose = read_rrd(out, "/world/ego/pose")
+    translations = pose["/world/ego/pose:Transform3D:translation"].tolist()
+    assert len(translations) == 40 and np.allclose(translations[3][0], [3.0, -2.0, 0.1])
+    (x, y, z, w) = pose["/world/ego/pose:Transform3D:quaternion"][3][0]
+    assert abs(x) < 1e-6 and abs(y) < 1e-6
+    assert math.isclose(math.degrees(2 * math.atan2(z, w)), -13.0, abs_tol=1e-3)  # yaw 13, y flipped
 
     path = read_rrd(out, "/world/ego/driven_path", index=None)
     strip = path["/world/ego/driven_path:LineStrips3D:strips"][0][0]
@@ -392,6 +400,26 @@ def test_rerun_verifies_the_recordings(v1_log: Path, v2_log: Path, tmp_path: Pat
         pytest.skip("no rerun executable beside the interpreter")
     done = subprocess.run([str(rerun), "rrd", "verify", *map(str, outs)], capture_output=True, text=True)
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None:
+    """The blueprint is in the file, active: a chase view on the ego, the
+    scenario's state timeline, and the rest in tabs."""
+    import subprocess
+    import sys
+
+    out = tmp_path / "v2.rrd"
+    acsr.convert(v2_log, out)
+    rerun = Path(sys.executable).with_name("rerun")
+    if not rerun.exists():
+        pytest.skip("no rerun executable beside the interpreter")
+    done = subprocess.run([str(rerun), "rrd", "print", "--verbose", str(out)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    text = done.stdout
+    assert f'StoreId(Blueprint, "autoware_carla_scenario", "{v2_log.name.split(".")[0]}.blueprint"), make_active: true' in text
+    assert text.count("ViewBlueprint:class_identifier") == 6
+    for expected in ("/world/ego/pose@Transform3D", "EyeControls3D:position", "EyeControls3D:look_target"):
+        assert expected in text, expected
 
 
 # ---------------------------------------------------------------------------
