@@ -77,7 +77,9 @@ def test_v1_log(v1_log: Path, tmp_path: Path, read_rrd, rrd_columns) -> None:
         "/world/actors/velocity:Arrows3D:vectors",
         "/ego/speed_mps:Scalars:scalars",
         "/ego/control:Scalars:scalars",
-        "/world/traffic_lights:Boxes3D:colors",
+        "/world/traffic_lights:Boxes3D:centers",
+        "/world/traffic_lights/bulbs:Points3D:positions",
+        "/world/traffic_lights/tags:Points3D:labels",
         "/world/traffic_lights/stops:Points3D:positions",
         "/result:TextDocument:text",
         "/result/passed:Scalars:scalars",
@@ -110,14 +112,23 @@ def test_v1_log(v1_log: Path, tmp_path: Path, read_rrd, rrd_columns) -> None:
     labels = cells(df, "/world/actors:Boxes3D:labels")
     assert labels == [["78 vehicle.lincoln.mkz Ego"]]
 
-    lights = read_rrd(out, "/world/traffic_lights")
-    heads = sum(len(r["boxes"]) for r in records if r["type"] == "traffic_light")
-    colors = cells(lights, "/world/traffic_lights:Boxes3D:colors")
+    # The heads as wireframe boxes; three bulbs each, the one the state
+    # names lit; each light's id and state above it.
+    light_records = [r for r in records if r["type"] == "traffic_light"]
+    heads = sum(len(r["boxes"]) for r in light_records)
+    housings = read_rrd(out, "/world/traffic_lights", index=None)
+    assert len(housings["/world/traffic_lights:Boxes3D:half_sizes"][0]) == heads
+    lights = read_rrd(out, ["/world/traffic_lights/bulbs", "/world/traffic_lights/tags"])
+    colors = cells(lights, "/world/traffic_lights/bulbs:Points3D:colors")
     changes = [r for r in ticks if r.get("lights")]
     assert len(colors) == len(changes)
-    assert all(len(c) == heads for c in colors)
-    red = 0xFF0000FF
-    assert set(colors[0].tolist()) == {red}
+    assert all(len(c) == 3 * heads for c in colors)
+    red, dim_yellow, dim_green, green = 0xFF0000FF, 0x463800FF, 0x003E00FF, 0x00DC00FF
+    assert colors[0].tolist()[:3] == [red, dim_yellow, dim_green]  # every light red
+    assert colors[-1].tolist()[-3:] == [0x460000FF, dim_yellow, green]
+    tags = cells(lights, "/world/traffic_lights/tags:Points3D:labels")
+    assert list(tags[0]) == [f"{r['id']} Red" for r in light_records]
+    assert list(tags[-1]) == [f"{r['id']} Green" for r in light_records]
 
     # Each light's state for the state timeline view; the run fails at its end.
     scenario = read_rrd(out, "/scenario/**")

@@ -90,7 +90,9 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `world/ego/driven_path` | the ego's path, a point every 0.5 m (static) |
 | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (a planner's trajectory: `markers` records), held until the next record |
 | `ego/speed_mps`, `ego/control` | speed, and throttle / steer / brake (`Scalars`) |
-| `world/traffic_lights` | the light heads as boxes, coloured by their state over time |
+| `world/traffic_lights` | the light heads, as wireframe boxes |
+| `world/traffic_lights/bulbs` | three bulbs per head, red / yellow / green top to bottom: the one the light's state names lit, the others dim |
+| `world/traffic_lights/tags` | each light's id and state (`77 Red`), written above it |
 | `world/traffic_lights/stops`, `world/traffic_lights/states` | stop-line waypoints; state changes (`TextLog`) |
 | `conditions/<pass\|fail>/<index>` | 1 while the condition is satisfied, on every tick from its first check |
 | `scenario/progress` | the run in the state timeline view (`StateChange`): `running` from the first tick, then `PASSED` / `FAILED` at the last |

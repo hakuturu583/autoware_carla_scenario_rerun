@@ -16,7 +16,9 @@
 //! | `world/ego/driven_path` | the ego's path (static `LineStrips3D`, a point every 0.5 m) |
 //! | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (`markers` records), held until the next |
 //! | `ego/speed_mps`, `ego/control` | the ego's speed, and throttle/steer/brake (`Scalars`) |
-//! | `world/traffic_lights` | the light heads (static boxes) coloured by state over time |
+//! | `world/traffic_lights` | the light heads, wireframe boxes (static) |
+//! | `world/traffic_lights/bulbs` | three bulbs per head (red, yellow, green), the one the state names lit |
+//! | `world/traffic_lights/tags` | each light's id and state, written above it |
 //! | `world/traffic_lights/stops` | their stop-line waypoints (static `Points3D`) |
 //! | `world/traffic_lights/states` | the state changes, `TextLog` |
 //! | `conditions/<role>/<index>` | 1 while a pass/fail condition is satisfied, 0 while not (`condition` records, carried forward) |
@@ -53,6 +55,11 @@ const VEHICLE_COLOR: [u8; 3] = [64, 160, 255];
 const WALKER_COLOR: [u8; 3] = [255, 200, 0];
 const DRIVEN_PATH_COLOR: [u8; 3] = [255, 128, 0];
 const STOP_LINE_COLOR: [u8; 3] = [255, 255, 255];
+const HOUSING_COLOR: [u8; 3] = [150, 150, 150];
+/// The bulbs off: red, yellow, green, dimmed.
+const BULB_DIM: [[u8; 3]; 3] = [[70, 0, 0], [70, 56, 0], [0, 62, 0]];
+/// How far above a light's highest head its id and state are written, metres.
+const LIGHT_TAG_HEIGHT_M: f64 = 0.8;
 const RUNNING_COLOR: [u8; 3] = [64, 160, 255];
 const PASSED_COLOR: [u8; 3] = [0, 200, 80];
 const FAILED_COLOR: [u8; 3] = [230, 50, 50];
@@ -576,15 +583,35 @@ fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {
     Ok(())
 }
 
+/// A light head's three bulbs, top to bottom: red, yellow, green; the one
+/// the state names lit, the others dim.
+fn bulb_colors(state: LightState) -> [Color; 3] {
+    let dim = [rgb(BULB_DIM[0]), rgb(BULB_DIM[1]), rgb(BULB_DIM[2])];
+    let lit = |i: usize| {
+        let mut c = dim;
+        c[i] = light_color(state);
+        c
+    };
+    match state {
+        LightState::Red => lit(0),
+        LightState::Yellow => lit(1),
+        LightState::Green => lit(2),
+        LightState::Off => dim,
+        LightState::Unknown => [light_color(state); 3],
+    }
+}
+
 fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]) -> RrResult<()> {
     if lights.is_empty() {
         return Ok(());
     }
     let (mut centers, mut half_sizes, mut quats) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut stops, mut stop_labels) = (Vec::new(), Vec::new());
+    let (mut bulbs, mut bulb_radii) = (Vec::new(), Vec::new());
+    let (mut tags, mut stops, mut stop_labels) = (Vec::new(), Vec::new(), Vec::new());
     let mut heads: Vec<(u32, usize)> = Vec::new();
     for light in lights {
         heads.push((light.id.0, light.boxes.len()));
+        let mut top = light.location.0 .2;
         for b in &light.boxes {
             let (x, y, z, ex, ey, ez, yaw) = b.0;
             centers.push(point32([x, y, z]));
@@ -596,7 +623,16 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
                 q[2] as f32,
                 q[3] as f32,
             ]));
+            // Three bulbs stacked in the head, a third of its height apart.
+            let radius = (ex.min(ey).min(ez / 3.0) * 0.9) as f32;
+            for k in [1.0, 0.0, -1.0] {
+                bulbs.push(point32([x, y, z + k * ez * 2.0 / 3.0]));
+                bulb_radii.push(radius);
+            }
+            top = top.max(z + ez);
         }
+        let (x, y, _) = light.location.0;
+        tags.push(point32([x, y, top + LIGHT_TAG_HEIGHT_M]));
         for s in &light.stops {
             let (x, y, z, _yaw) = s.0;
             stops.push(point32([x, y, z + 0.05]));
@@ -604,15 +640,28 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
         }
     }
     if !centers.is_empty() {
-        // Static but for the colours, which are the lights' states: a static
-        // component would hide every temporal one.
         w.fixed(
             "world/traffic_lights",
             &Boxes3D::from_centers_and_half_sizes(centers, half_sizes)
                 .with_quaternions(quats)
-                .with_fill_mode(rerun::FillMode::Solid),
+                .with_colors([rgb(HOUSING_COLOR)])
+                .with_fill_mode(rerun::FillMode::MajorWireframe),
+        )?;
+        // Static but for the colours, which are the lights' states: a static
+        // component would hide every temporal one.
+        w.fixed(
+            "world/traffic_lights/bulbs",
+            &Points3D::new(bulbs).with_radii(bulb_radii),
         )?;
     }
+    // Where each light's id and state is written (the labels change with it).
+    w.fixed(
+        "world/traffic_lights/tags",
+        &Points3D::new(tags)
+            .with_radii([0.05])
+            .with_colors([rgb(STOP_LINE_COLOR)])
+            .with_show_labels(true),
+    )?;
     if !stops.is_empty() {
         w.fixed(
             "world/traffic_lights/stops",
@@ -624,8 +673,8 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
     }
     let total: usize = heads.iter().map(|(_, n)| n).sum();
     let mut state: HashMap<u32, LightState> = HashMap::new();
-    let (mut frames, mut times, mut colors, mut texts) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut frames, mut times, mut colors, mut labels, mut texts) =
+        (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
     let mut k = 0;
     while k < ticks.lights.len() {
         let tick = ticks.lights[k].tick;
@@ -639,18 +688,26 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
         frames.push(ticks.frame[tick as usize]);
         times.push(ticks.t[tick as usize]);
         for (id, n) in &heads {
-            let color = light_color(state.get(id).copied().unwrap_or(LightState::Unknown));
-            colors.extend(std::iter::repeat_n(color, *n));
+            let s = state.get(id).copied().unwrap_or(LightState::Unknown);
+            for _ in 0..*n {
+                colors.extend(bulb_colors(s));
+            }
+            labels.push(format!("{id} {s}"));
         }
         texts.push(changed.join(", "));
     }
     if total > 0 {
-        let columns = Boxes3D::update_fields()
+        let columns = Points3D::update_fields()
             .with_colors(colors)
-            .columns(std::iter::repeat_n(total, frames.len()))
+            .columns(std::iter::repeat_n(3 * total, frames.len()))
             .map_err(err)?;
-        w.columns("world/traffic_lights", &frames, &times, columns)?;
+        w.columns("world/traffic_lights/bulbs", &frames, &times, columns)?;
     }
+    let columns = Points3D::update_fields()
+        .with_labels(labels)
+        .columns(std::iter::repeat_n(heads.len(), frames.len()))
+        .map_err(err)?;
+    w.columns("world/traffic_lights/tags", &frames, &times, columns)?;
     let columns = TextLog::update_fields()
         .with_many_text(texts)
         .columns_of_unit_batches()
