@@ -1,0 +1,8 @@
+/target
+/dist
+/.venv
+__pycache__/
+*.so
+*.rrd
+/python/autoware_carla_scenario_rerun/*.so
+.pytest_cache/
