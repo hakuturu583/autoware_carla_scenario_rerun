@@ -1,0 +1,409 @@
+# Cuts releases of autoware-carla-scenario-rerun and publishes them to PyPI:
+# an abi3 wheel per architecture (manylinux_2_28 x86_64 and aarch64, one wheel
+# for every CPython 3.10+) and the sdist.
+#
+# Release tags are the version, X.Y.Z (`[package] version` in Cargo.toml, which
+# maturin hands PyPI). PyPI accepts a version once, so every release bumps it,
+# and a run fails early (in `release` and `resolve`) if the version is already
+# published.
+#
+# There are three ways in, and the first is the everyday one:
+#
+#   push to main   the auto-release path. When the merged PR carries exactly one
+#                  `release:major|minor|patch` label, the `release` job bumps the
+#                  version (tools/bump_version.py), tags it and drafts a GitHub
+#                  release; the tag is built and published, all in this one
+#                  run, and the GitHub release is published last. No label, no
+#                  release.
+#   push a release tag   a hand-cut tag (the first release, 0.1.0, or a hotfix)
+#                  is built and published directly, then gets a GitHub release;
+#                  the `release` job is skipped.
+#   workflow_dispatch    a dry run: builds and checks everything at the
+#                  dispatched commit, without tagging; with publish=true it also
+#                  uploads to TestPyPI.
+#
+# After an upload, `verify-published` installs that version from the index it
+# went to (nothing else) on each architecture and converts a log with it.
+#
+# It is one workflow rather than a separate `on: push: tags` one on purpose: the
+# auto-release tag is pushed with GITHUB_TOKEN, and a tag pushed with
+# GITHUB_TOKEN starts no new workflow runs. So the tag is built and published by
+# follow-up jobs of the run that cut it.
+#
+# Publishing uses PyPI Trusted Publishing (OIDC) from the "pypi" / "testpypi"
+# environments; register them as the project's trusted publisher (README,
+# "Releasing"). No API tokens are stored.
+#
+# A version can never be replaced on PyPI, so the tests run again on the tagged
+# commit rather than trusting that CI was green.
+name: Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["[0-9]+.[0-9]+.[0-9]+"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Upload to TestPyPI (otherwise build and check only)"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  PACKAGE: autoware-carla-scenario-rerun
+
+jobs:
+  # Read the release label off the merged PR and, if there is one, bump the
+  # version and push the tag. Runs only on a push to main.
+  release:
+    name: cut the release tag
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: read
+    # Never two release cuts at once; a queued one runs after (and fails on the
+    # non-fast-forward push if main moved).
+    concurrency:
+      group: release-main
+      cancel-in-progress: false
+    outputs:
+      bump: ${{ steps.pr.outputs.bump }}
+      tag: ${{ steps.bump.outputs.next }}
+    steps:
+      - name: Read the release label off the merged PR
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # An API error fails the job; only an empty list means "no PR".
+          pr_json=$(gh api "repos/${{ github.repository }}/commits/${{ github.sha }}/pulls" \
+            --jq '.[0] // empty')
+          if [ -z "$pr_json" ]; then
+            echo "No PR associated with this push: nothing to release"
+            echo "bump=none" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          labels=$(echo "$pr_json" | jq -r '[.labels[].name] | join(",")')
+          bump=none
+          count=0
+          for lvl in major minor patch; do
+            if echo ",$labels," | grep -q ",release:${lvl},"; then
+              bump=$lvl
+              count=$((count + 1))
+            fi
+          done
+          if [ "$count" -gt 1 ]; then
+            echo "::error::More than one release label on the PR: pick exactly one"
+            exit 1
+          fi
+          echo "bump=${bump}" >> "$GITHUB_OUTPUT"
+          echo "Resolved bump level: ${bump}"
+
+      # The pushed commit, not whatever main is now: the bump is pushed to main
+      # without force, so if main has moved since, the push fails loudly
+      # (re-runs included) instead of releasing an unverified commit.
+      - uses: actions/checkout@v4
+        if: steps.pr.outputs.bump != 'none'
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+
+      - name: Bump the version (Cargo.toml, Cargo.lock)
+        if: steps.pr.outputs.bump != 'none'
+        id: bump
+        env:
+          BUMP: ${{ steps.pr.outputs.bump }}
+        run: |
+          set -euo pipefail
+          next=$(python3 tools/bump_version.py "$BUMP")
+          echo "next=${next}" >> "$GITHUB_OUTPUT"
+          echo "Bumped to ${next} (${BUMP})"
+
+      - name: Fail if the version is already tagged or published
+        if: steps.pr.outputs.bump != 'none'
+        env:
+          NEXT: ${{ steps.bump.outputs.next }}
+        run: |
+          set -euo pipefail
+          if git rev-parse "refs/tags/${NEXT}" >/dev/null 2>&1; then
+            echo "::error::Tag ${NEXT} already exists"
+            exit 1
+          fi
+          code=$(curl -s -o /dev/null -w '%{http_code}' "https://pypi.org/pypi/${PACKAGE}/${NEXT}/json")
+          if [ "$code" = 200 ]; then
+            echo "::error::${PACKAGE} ${NEXT} is already on PyPI"
+            exit 1
+          fi
+
+      - name: Commit, tag and push
+        if: steps.pr.outputs.bump != 'none'
+        env:
+          TAG: ${{ steps.bump.outputs.next }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Cargo.toml Cargo.lock
+          git commit -m "chore(release): ${TAG}"
+          git tag -a "${TAG}" -m "Release ${TAG}"
+          git push origin "HEAD:main"
+          git push origin "${TAG}"
+
+      # A draft until `github-release` publishes it, after PyPI.
+      - name: Draft the GitHub release with generated notes
+        if: steps.pr.outputs.bump != 'none'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.bump.outputs.next }}
+        run: gh release create "${TAG}" --draft --verify-tag --title "${TAG}" --generate-notes
+
+  # One place to work out, for all three entry points, which commit to build
+  # and whether and where to publish. Runs even when `release` is skipped.
+  resolve:
+    name: resolve what to build
+    needs: [release]
+    if: always()
+    runs-on: ubuntu-24.04
+    outputs:
+      proceed: ${{ steps.r.outputs.proceed }}
+      publish: ${{ steps.r.outputs.publish }}
+      index: ${{ steps.r.outputs.index }}
+      upload_url: ${{ steps.r.outputs.upload_url }}
+      ref: ${{ steps.r.outputs.ref }}
+      tag: ${{ steps.r.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: r
+        env:
+          EVENT: ${{ github.event_name }}
+          REF: ${{ github.ref }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          RELEASE_RESULT: ${{ needs.release.result }}
+          BUMP: ${{ needs.release.outputs.bump }}
+          TAG: ${{ needs.release.outputs.tag }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          proceed=false; publish=false; index=pypi; ref="$SHA"; tag=""
+          if [ "$EVENT" = push ] && [[ "$REF" == refs/tags/* ]]; then
+            # A hand-cut tag: it must be the package's version.
+            version=$(python3 tools/bump_version.py --current)
+            if [ "$version" != "$REF_NAME" ]; then
+              echo "::error::Tag ${REF_NAME} is not the package version ${version} (Cargo.toml)"
+              exit 1
+            fi
+            proceed=true; publish=true; ref="$REF_NAME"; tag="$REF_NAME"
+          elif [ "$EVENT" = push ] && [ "$REF" = refs/heads/main ]; then
+            # The auto-release path: build and publish only if a tag was cut.
+            if [ "$RELEASE_RESULT" = success ] && [ "$BUMP" != none ] && [ -n "$TAG" ]; then
+              proceed=true; publish=true; ref="$TAG"; tag="$TAG"
+            fi
+          elif [ "$EVENT" = workflow_dispatch ]; then
+            proceed=true; index=testpypi
+            if [ "$INPUT_PUBLISH" = true ]; then publish=true; fi
+          fi
+          upload_url=https://upload.pypi.org/legacy/
+          json=https://pypi.org/pypi
+          if [ "$index" = testpypi ]; then
+            upload_url=https://test.pypi.org/legacy/; json=https://test.pypi.org/pypi
+          fi
+          # PyPI accepts a version once: fail now, not after the build. A re-run
+          # (attempt > 1) may be finishing a partial upload, so it is let through.
+          if [ "$publish" = true ] && [ "$RUN_ATTEMPT" -eq 1 ]; then
+            # The tag is the version; a dispatch publishes the checked-out one.
+            version="${tag:-$(python3 tools/bump_version.py --current)}"
+            code=$(curl -s -o /dev/null -w '%{http_code}' "${json}/${PACKAGE}/${version}/json")
+            if [ "$code" = 200 ]; then
+              echo "::error::${PACKAGE} ${version} is already on ${index}"
+              exit 1
+            fi
+          fi
+          {
+            echo "proceed=$proceed"; echo "publish=$publish"; echo "index=$index"
+            echo "upload_url=$upload_url"; echo "ref=$ref"; echo "tag=$tag"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  verify:
+    name: test the tagged commit
+    needs: [resolve]
+    if: always() && needs.resolve.outputs.proceed == 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: astral-sh/setup-uv@v6
+      - name: The version in the tag must be the version in the package
+        if: needs.resolve.outputs.tag != ''
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: test "$(python3 tools/bump_version.py --current)" = "$TAG"
+      - name: cargo test
+        run: cargo test --workspace
+      - name: The wheel's tests
+        run: |
+          set -euo pipefail
+          uvx maturin build --release --out dist
+          uv venv --python 3.12 /tmp/venv
+          uv pip install --python /tmp/venv/bin/python dist/*.whl pytest jsonschema 'rerun-sdk[catalog]>=0.38.1,<0.39'
+          /tmp/venv/bin/python -m pytest -q tests/python -p no:cacheprovider
+
+  sdist:
+    needs: [resolve, verify]
+    if: always() && needs.verify.result == 'success'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+      - uses: actions/upload-artifact@v4
+        with: { name: dist-sdist, path: dist/*.tar.gz }
+
+  wheel:
+    # One abi3 wheel per architecture, built natively on its own runner in
+    # the manylinux_2_28 image.
+    name: wheel (${{ matrix.arch.name }})
+    needs: [resolve, verify]
+    if: always() && needs.verify.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - { name: x86_64, runner: ubuntu-24.04 }
+          - { name: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.arch.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: PyO3/maturin-action@v1
+        with:
+          target: ${{ matrix.arch.name }}
+          manylinux: "2_28"
+          args: --release --out dist
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.10" }
+      - name: Check the wheel (abi3, manylinux, converts a log)
+        run: |
+          set -euo pipefail
+          ls -l dist
+          case "$(ls dist/*.whl)" in
+            *-cp310-abi3-manylinux_2_28_${{ matrix.arch.name }}.whl) ;;
+            *) echo "::error::not an abi3 manylinux_2_28 wheel: $(ls dist)"; exit 1 ;;
+          esac
+          python -m venv /tmp/check
+          /tmp/check/bin/pip install dist/*.whl
+          cd /tmp && /tmp/check/bin/python -c "
+          import autoware_carla_scenario_rerun as m
+          s = m.convert('$GITHUB_WORKSPACE/tests/data/v1/TrafficLightComplianceScenario-1.trajectory.jsonl', '/tmp/x.rrd')
+          assert s['ticks'] == 334, s
+          print(m.__version__, 'OK')"
+      - uses: actions/upload-artifact@v4
+        with: { name: "dist-wheel-${{ matrix.arch.name }}", path: dist/*.whl }
+
+  publish:
+    name: publish to ${{ needs.resolve.outputs.index }}
+    needs: [resolve, sdist, wheel]
+    # Decided by `resolve`, from the event: a release goes to PyPI; a manual
+    # run only with publish=true, to TestPyPI. Waits for every build, so
+    # nothing is uploaded unless all of it built.
+    if: >-
+      always() && needs.resolve.outputs.publish == 'true' &&
+      needs.sdist.result == 'success' && needs.wheel.result == 'success'
+    runs-on: ubuntu-24.04
+    environment: ${{ needs.resolve.outputs.index }}
+    permissions:
+      id-token: write  # Trusted Publishing; no token in secrets.
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { name: dist-sdist, path: dist }
+      - uses: actions/download-artifact@v4
+        with: { pattern: dist-wheel-*, merge-multiple: true, path: dist }
+      - run: ls -l dist
+      # PyPI rejects bad metadata only after the OIDC exchange; failing here
+      # costs nothing.
+      - run: pipx run twine check --strict dist/*
+      - uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          repository-url: ${{ needs.resolve.outputs.upload_url }}
+          # An existing file is an error, so a version is never "released"
+          # without uploading anything; only a re-run may finish a partial upload.
+          skip-existing: ${{ github.run_attempt > 1 }}
+
+  # What `pip install autoware-carla-scenario-rerun` gets, on each
+  # architecture: the version just uploaded, from that index alone.
+  verify-published:
+    name: install from ${{ needs.resolve.outputs.index }} (${{ matrix.arch.name }})
+    needs: [resolve, publish]
+    if: always() && needs.publish.result == 'success'
+    strategy:
+      fail-fast: false
+      matrix:
+        arch:
+          - { name: x86_64, runner: ubuntu-24.04 }
+          - { name: aarch64, runner: ubuntu-24.04-arm }
+    runs-on: ${{ matrix.arch.runner }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - name: Install the published version from the index and convert a log
+        env:
+          INDEX: ${{ needs.resolve.outputs.index }}
+        run: |
+          set -euo pipefail
+          version=$(python3 tools/bump_version.py --current)
+          simple=https://pypi.org/simple/
+          if [ "$INDEX" = testpypi ]; then simple=https://test.pypi.org/simple/; fi
+          python -m venv /tmp/user
+          # An index can take a few minutes to serve a new upload.
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if /tmp/user/bin/pip install --no-cache-dir --only-binary :all: --index-url "$simple" "${PACKAGE}==${version}"; then
+              break
+            fi
+            if [ "$attempt" = 10 ]; then exit 1; fi
+            sleep 30
+          done
+          cd /tmp && /tmp/user/bin/python -c "
+          import autoware_carla_scenario_rerun as m
+          s = m.convert('$GITHUB_WORKSPACE/tests/data/v1/TrafficLightComplianceScenario-1.trajectory.jsonl', '/tmp/x.rrd')
+          assert s['ticks'] == 334 and m.__version__ == '$version', (s, m.__version__)
+          print(m.__version__, 'OK')"
+
+  # Last: the GitHub release appears only once the package is on PyPI. The
+  # auto-release path drafted it in `release`; a hand-cut tag gets one here.
+  github-release:
+    name: publish the GitHub release
+    needs: [resolve, publish]
+    if: always() && needs.publish.result == 'success' && needs.resolve.outputs.index == 'pypi'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            gh release edit "$TAG" --repo "$REPO" --draft=false
+          else
+            gh release create "$TAG" --repo "$REPO" --verify-tag --title "$TAG" --generate-notes
+          fi

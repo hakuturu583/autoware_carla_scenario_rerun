@@ -1,0 +1,114 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+# A new push to a pull request makes its running CI moot; pushes to main are
+# never cancelled.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    # Formatting, lints, and the Rust tests -- the parser's property tests,
+    # the projections against Lanelet2's, and the check that src/generated.rs
+    # is what the vendored schema generates (xtask/tests/generated.rs).
+    name: rust (fmt, clippy, test)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo fmt --check
+        run: cargo fmt --all --check
+      - name: cargo clippy -D warnings
+        run: cargo clippy --workspace --all-targets --features python -- -D warnings
+      - name: cargo test
+        run: cargo test --workspace
+      - name: Benchmarks compile
+        run: cargo bench --no-run
+
+  wheel:
+    # The abi3 wheel, built with maturin and tested from a clean environment
+    # outside the checkout: the conversion, read back with Rerun's dataframe
+    # API. The oldest and newest supported Pythons on x86_64, the newest on
+    # aarch64.
+    name: wheel (${{ matrix.runner }}, py${{ matrix.python }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04]
+        python: ["3.10", "3.14"]
+        include:
+          - { runner: ubuntu-24.04-arm, python: "3.14" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: wheel
+      - uses: astral-sh/setup-uv@v6
+      - name: Build the wheel
+        run: uvx maturin build --release --out dist
+      - name: Install it into a clean environment and run the tests
+        env:
+          PY: ${{ matrix.python }}
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/clean"
+          cp -r tests "$RUNNER_TEMP/clean/"
+          cp -r schema "$RUNNER_TEMP/clean/"
+          cp -r tools "$RUNNER_TEMP/clean/"
+          cp Cargo.toml Cargo.lock "$RUNNER_TEMP/clean/"
+          cd "$RUNNER_TEMP/clean"
+          uv venv --python "$PY"
+          uv pip install "$GITHUB_WORKSPACE"/dist/*.whl
+          # pyproject.toml's `test` group.
+          uv pip install pytest jsonschema 'rerun-sdk[catalog]>=0.38.1,<0.39'
+          .venv/bin/python -c "import autoware_carla_scenario_rerun as m, sys; assert 'site-packages' in m.__file__, m.__file__; print(m.__version__, m.RERUN_VERSION)"
+          .venv/bin/python -m pytest -v tests/python -p no:cacheprovider
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.runner }}-py${{ matrix.python }}
+          path: dist/*.whl
+          retention-days: 7
+
+  sdist:
+    # What `pip install` builds when no wheel fits: the sdist, built and
+    # installed from source (it needs a Rust toolchain) in a clean environment.
+    name: sdist (build and install from source)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: sdist
+      - uses: astral-sh/setup-uv@v6
+      - name: Build the sdist
+        run: uvx maturin sdist --out dist
+      - name: Install from it and convert a log
+        run: |
+          set -euo pipefail
+          mkdir "$RUNNER_TEMP/clean" && cd "$RUNNER_TEMP/clean"
+          uv venv --python 3.12
+          uv pip install "$GITHUB_WORKSPACE"/dist/*.tar.gz
+          .venv/bin/python - <<'PY'
+          import os, tempfile
+          import autoware_carla_scenario_rerun as m
+          log = os.path.join(os.environ["GITHUB_WORKSPACE"], "tests/data/v1/TrafficLightComplianceScenario-1.trajectory.jsonl")
+          out = os.path.join(tempfile.mkdtemp(), "x.rrd")
+          stats = m.convert(log, out)
+          assert stats["ticks"] == 334 and os.path.getsize(out) > 0, stats
+          print("converted", stats["ticks"], "ticks into", stats["rrd_bytes"], "bytes")
+          PY
