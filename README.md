@@ -96,8 +96,8 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `world/traffic_lights/stops`, `world/traffic_lights/states` | stop-line waypoints; state changes (`TextLog`) |
 | `conditions/<pass\|fail>/<index>` | 1 while the condition is satisfied, on every tick from its first check |
 | `scenario/progress` | the run in the state timeline view (`StateChange`): `running` from the first tick, then `PASSED` / `FAILED` at the last |
-| `scenario/actions/<label>` | each action's lifecycle (`action` records): standby, start, running, end, complete -- OpenSCENARIO's states, the start and end held for the tick they happen on; the lane named by its label (two actions with one label get `_<phase>_<index>`) |
-| `scenario/conditions/<pass\|fail>/<label>` | each condition `satisfied` / `not satisfied`, its lane named by its label (`pass/reached_goal`; what a path would have to escape becomes `_`, and two conditions with one label get `_<index>`); a pass condition satisfied is green, a fail condition red |
+| `scenario/actions/<label>` | each action's lifecycle (`action` records): standby, start, running, end, complete -- OpenSCENARIO's states, the start and end held for the tick they happen on; the lane named by its label (two actions with one label get `_<phase>_<index>`, and a name still taken `_2`, `_3`, ...) |
+| `scenario/conditions/<pass\|fail>/<label>` | each condition `satisfied` / `not satisfied`, its lane named by its label (`pass/reached_goal`; what a path would have to escape becomes `_`, two conditions with one label get `_<index>`, and a name still taken `_2`, `_3`, ...); a pass condition satisfied is green, a fail condition red |
 | `scenario/traffic_lights/<name>` | each light's state (`Red`, `Yellow`, `Green`, ...) over time, the lane named as the tag (`1234`, `carla_77`) |
 | `result`, `result/log`, `result/passed` | the verdict (the `result` record, or `_result.json` for a version-1 log) |
 | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |

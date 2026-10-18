@@ -1061,18 +1061,19 @@ fn write_action_states(
     w: &mut Writer,
     actions: &BTreeMap<(String, u64), Vec<&g::ActionRecord>>,
 ) -> RrResult<()> {
-    let names: Vec<Option<String>> = actions
-        .values()
-        .map(|records| condition_lane(&records[0].label))
-        .collect();
-    for (((phase, index), records), name) in actions.iter().zip(&names) {
-        // Two actions with the same label: their place tells them apart.
-        let shared = names.iter().filter(|n| *n == name).count() > 1;
-        let lane = match name {
-            Some(name) if shared => format!("{name}_{phase}_{index}"),
-            Some(name) => name.clone(),
-            None => format!("{phase}_{index}"),
-        };
+    let lanes = lane_names(
+        actions
+            .iter()
+            .map(|((phase, index), records)| {
+                (
+                    String::new(),
+                    records[0].label.as_str(),
+                    format!("{phase}_{index}"),
+                )
+            })
+            .collect(),
+    );
+    for ((_, records), lane) in actions.iter().zip(&lanes) {
         let (mut frames, mut times, mut states) = (Vec::new(), Vec::new(), Vec::new());
         for r in records {
             let state = r.state.to_string();
@@ -1123,29 +1124,59 @@ fn condition_lane(label: &str) -> Option<String> {
     (!name.is_empty()).then_some(name)
 }
 
+/// The lanes of `items` (`(group, label, place)`, a group being a path
+/// prefix), one each and no two alike: `group` and the label's
+/// [`condition_lane`] name; its `place` too (`name_place`) when another of
+/// the group has that name, the place alone without one. A name that is still
+/// taken -- another's label reads `0` or `cut_in_1` -- gets `_2`, `_3`, ...:
+/// two histories in one lane would read as one.
+fn lane_names(items: Vec<(String, &str, String)>) -> Vec<String> {
+    let bases: Vec<Option<String>> = items
+        .iter()
+        .map(|(group, label, _)| condition_lane(label).map(|n| format!("{group}{n}")))
+        .collect();
+    let mut used = std::collections::HashSet::new();
+    items
+        .iter()
+        .zip(&bases)
+        .map(|((group, _, place), base)| {
+            let name = match base {
+                Some(n) if bases.iter().filter(|b| *b == base).count() > 1 => {
+                    format!("{n}_{place}")
+                }
+                Some(n) => n.clone(),
+                None => format!("{group}{place}"),
+            };
+            let mut lane = name.clone();
+            let mut k = 2;
+            while !used.insert(lane.clone()) {
+                lane = format!("{name}_{k}");
+                k += 1;
+            }
+            lane
+        })
+        .collect()
+}
+
 /// Each pass/fail condition's state as the run checked it: a pass condition
 /// satisfied is green, a fail condition satisfied red.
 fn write_condition_states(
     w: &mut Writer,
     conditions: &BTreeMap<(String, u64), Vec<&g::ConditionRecord>>,
 ) -> RrResult<()> {
-    let names: Vec<Option<String>> = conditions
-        .values()
-        .map(|records| condition_lane(&records[0].label))
-        .collect();
-    for (((role, index), records), name) in conditions.iter().zip(&names) {
-        // Two conditions of a role with the same label: the index tells them apart.
-        let shared = conditions
-            .keys()
-            .zip(&names)
-            .filter(|((r, _), n)| r == role && *n == name)
-            .count()
-            > 1;
-        let lane = match name {
-            Some(name) if shared => format!("{name}_{index}"),
-            Some(name) => name.clone(),
-            None => index.to_string(),
-        };
+    let lanes = lane_names(
+        conditions
+            .iter()
+            .map(|((role, index), records)| {
+                (
+                    format!("{role}/"),
+                    records[0].label.as_str(),
+                    index.to_string(),
+                )
+            })
+            .collect(),
+    );
+    for (((role, _), records), lane) in conditions.iter().zip(&lanes) {
         let satisfied = if role == "fail" {
             FAILED_COLOR
         } else {
@@ -1169,7 +1200,7 @@ fn write_condition_states(
         }
         write_states(
             w,
-            &format!("scenario/conditions/{role}/{lane}"),
+            &format!("scenario/conditions/{lane}"),
             &[
                 ("satisfied", "satisfied".into(), satisfied),
                 ("not_satisfied", "not satisfied".into(), UNSATISFIED_COLOR),
@@ -1324,6 +1355,42 @@ mod tests {
         assert_eq!(names[&78], "1003");
         assert_eq!(names[&79], "carla 79");
         assert_eq!(light_names(&[&a], None)[&77], "carla 77");
+    }
+
+    #[test]
+    fn lanes_never_share_a_name() {
+        let lanes = |items: &[(&str, &str, &str)]| {
+            super::lane_names(
+                items
+                    .iter()
+                    .map(|(g, l, p)| (g.to_string(), *l, p.to_string()))
+                    .collect(),
+            )
+        };
+        // By label; the place for a shared label, or for none.
+        assert_eq!(
+            lanes(&[
+                ("pass/", "goal", "0"),
+                ("pass/", "a", "1"),
+                ("pass/", "a", "2"),
+                ("fail/", "a", "0")
+            ]),
+            ["pass/goal", "pass/a_1", "pass/a_2", "fail/a"]
+        );
+        // A label of nothing falls back to its place, which another's label may be.
+        assert_eq!(
+            lanes(&[("pass/", "()", "0"), ("pass/", "0", "1")]),
+            ["pass/0", "pass/0_2"]
+        );
+        assert_eq!(
+            lanes(&[("", "!", "pre_tick_0"), ("", "pre_tick_0", "post_tick_0")]),
+            ["pre_tick_0", "pre_tick_0_2"]
+        );
+        // A suffixed name another label already reads.
+        assert_eq!(
+            lanes(&[("", "a_1", "x_0"), ("", "a", "1"), ("", "a", "2")]),
+            ["a_1", "a_1_2", "a_2"]
+        );
     }
 
     #[test]
