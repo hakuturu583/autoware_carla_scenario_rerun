@@ -25,7 +25,8 @@ BIG_EPISODE = 18_446_744_073_709_551_000
 
 def v2_records(map_path: Path = TEST_MAP, ticks: int = 40) -> list[dict[str, Any]]:
     """A version-2 log: every record type, an actor spawned and one gone,
-    markers set and cleared, a condition that flips, a verdict."""
+    markers set and cleared, a condition that flips, an action that runs its
+    course, a verdict."""
     records: list[dict[str, Any]] = [
         {"type": "world", "schema_version": 2, "map": "Carla/Maps/TestTown", "episode": BIG_EPISODE},
         {
@@ -96,6 +97,15 @@ def v2_records(map_path: Path = TEST_MAP, ticks: int = 40) -> list[dict[str, Any
         if i == 30:
             records.append({"type": "condition", "frame": frame, "t": t, "role": "pass", "index": 0,
                             "label": "reached_goal", "satisfied": True})
+        # An action that is triggered at tick 5, runs and ends at 15; one that runs throughout.
+        state = {0: "standbyState", 5: "startTransition", 6: "runningState", 15: "endTransition",
+                 16: "completeState"}.get(i)
+        if state:
+            records.append({"type": "action", "frame": frame, "t": t, "phase": "post_tick", "index": 0,
+                            "label": "cut_in", "action_type": "LaneChangeAction", "state": state})
+        if i == 0:
+            records.append({"type": "action", "frame": frame, "t": t, "phase": "pre_tick", "index": 0,
+                            "label": "lead speed", "action_type": "SetSpeedAction", "state": "runningState"})
     records.append({
         "type": "result", "passed": True, "message": "reached the goal", "elapsed_seconds": round(0.05 * (ticks - 1), 3),
         "conditions": [

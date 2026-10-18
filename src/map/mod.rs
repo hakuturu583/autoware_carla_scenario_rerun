@@ -17,7 +17,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
 
-pub use osm::{Boundary, BoundaryKind, MapGeometry};
+pub use osm::{Boundary, BoundaryKind, MapGeometry, TrafficLightElement};
 pub use projection::{Projection, Projector};
 
 /// The file Autoware ships beside a map to say how to project it.

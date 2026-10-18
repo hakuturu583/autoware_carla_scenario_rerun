@@ -77,7 +77,9 @@ def test_v1_log(v1_log: Path, tmp_path: Path, read_rrd, rrd_columns) -> None:
         "/world/actors/velocity:Arrows3D:vectors",
         "/ego/speed_mps:Scalars:scalars",
         "/ego/control:Scalars:scalars",
-        "/world/traffic_lights:Boxes3D:colors",
+        "/world/traffic_lights:Boxes3D:centers",
+        "/world/traffic_lights/bulbs:Points3D:positions",
+        "/world/traffic_lights/tags:Points3D:labels",
         "/world/traffic_lights/stops:Points3D:positions",
         "/result:TextDocument:text",
         "/result/passed:Scalars:scalars",
@@ -110,14 +112,34 @@ def test_v1_log(v1_log: Path, tmp_path: Path, read_rrd, rrd_columns) -> None:
     labels = cells(df, "/world/actors:Boxes3D:labels")
     assert labels == [["78 vehicle.lincoln.mkz Ego"]]
 
-    lights = read_rrd(out, "/world/traffic_lights")
-    heads = sum(len(r["boxes"]) for r in records if r["type"] == "traffic_light")
-    colors = cells(lights, "/world/traffic_lights:Boxes3D:colors")
+    # The heads as wireframe boxes; three bulbs each, the one the state
+    # names lit; each light's id and state above it.
+    light_records = [r for r in records if r["type"] == "traffic_light"]
+    heads = sum(len(r["boxes"]) for r in light_records)
+    housings = read_rrd(out, "/world/traffic_lights", index=None)
+    assert len(housings["/world/traffic_lights:Boxes3D:half_sizes"][0]) == heads
+    lights = read_rrd(out, ["/world/traffic_lights/bulbs", "/world/traffic_lights/tags"])
+    colors = cells(lights, "/world/traffic_lights/bulbs:Points3D:colors")
     changes = [r for r in ticks if r.get("lights")]
     assert len(colors) == len(changes)
-    assert all(len(c) == heads for c in colors)
-    red = 0xFF0000FF
-    assert set(colors[0].tolist()) == {red}
+    assert all(len(c) == 3 * heads for c in colors)
+    red, dim_yellow, dim_green, green = 0xFF0000FF, 0x463800FF, 0x003E00FF, 0x00DC00FF
+    assert colors[0].tolist()[:3] == [red, dim_yellow, dim_green]  # every light red
+    assert colors[-1].tolist()[-3:] == [0x460000FF, dim_yellow, green]
+    tags = cells(lights, "/world/traffic_lights/tags:Points3D:labels")
+    # No light of the test map is near these (Town10HD's): named by CARLA's ids.
+    assert list(tags[0]) == [f"carla {r['id']} Red" for r in light_records]
+    assert list(tags[-1]) == [f"carla {r['id']} Green" for r in light_records]
+    tag_colors = cells(lights, "/world/traffic_lights/tags:Points3D:colors")
+    assert set(tag_colors[0].tolist()) == {red} and set(tag_colors[-1].tolist()) == {green}
+
+    # Each light's state for the state timeline view; the run fails at its end.
+    scenario = read_rrd(out, "/scenario/**")
+    lanes = {c.split(":")[0] for c in scenario.columns if c.endswith(":StateChange:state")}
+    ids = {r["id"] for r in records if r["type"] == "traffic_light"}
+    assert lanes == {"/scenario/progress"} | {f"/scenario/traffic_lights/carla_{i}" for i in ids}
+    progress = cells(scenario, "/scenario/progress:StateChange:state")
+    assert [p[0] for p in progress] == ["running", "failed"]
 
 
 # ---------------------------------------------------------------------------
@@ -133,6 +155,7 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     assert stats["actors"] == 3
     assert stats["markers"] == 2
     assert stats["conditions"] == 3
+    assert stats["actions"] == 6
     assert stats["has_result"]
     # The map record names the file, and its offsets place it.
     assert stats["map"] == str(TEST_MAP)
@@ -167,7 +190,43 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
 
     result = read_rrd(out, ["/result/log", "/result/passed"])
     assert cells(result, "/result/passed:Scalars:scalars")[0][0] == 1.0
+
+    # The state timeline view: the run, its conditions and its lights.
+    scenario = read_rrd(out, "/scenario/**")
+
+    def states(entity: str) -> list[tuple[int, str]]:
+        column = f"/scenario/{entity}:StateChange:state"
+        return [(f, c[0]) for f, c in zip(scenario["frame"], scenario[column]) if c is not None]
+    assert states("progress") == [(100, "running"), (139, "passed")]
+    # A condition's lane is named by its label.
+    assert states("conditions/pass/reached_goal") == [(100, "not_satisfied"), (130, "satisfied")]
+    assert states("conditions/fail/collision") == [(100, "not_satisfied")]
+    # Light 9 is the map's traffic-light element 30: named by its Lanelet2 id.
+    assert states("traffic_lights/30") == [(100, "Red"), (125, "Green")]
+    tags = read_rrd(out, "/world/traffic_lights/tags")
+    assert [list(t) for t in cells(tags, "/world/traffic_lights/tags:Points3D:labels")] == [["30 Red"], ["30 Green"]]
+    # Each action's lifecycle, named by its label.
+    assert states("actions/cut_in") == [
+        (100, "standbyState"), (105, "startTransition"), (106, "runningState"),
+        (115, "endTransition"), (116, "completeState"),
+    ]
+    assert states("actions/lead_speed") == [(100, "runningState")]
+    style = read_rrd(out, "/scenario/actions/cut_in", index=None)
+    assert list(style["/scenario/actions/cut_in:StateConfiguration:labels"][0]) == [
+        "standby", "start", "running", "end", "complete",
+    ]
+    style = read_rrd(out, "/scenario/conditions/pass/reached_goal", index=None)
+    labels = style["/scenario/conditions/pass/reached_goal:StateConfiguration:labels"][0]
+    assert list(labels) == ["satisfied", "not satisfied"]
     assert "PASSED" in cells(result, "/result/log:TextLog:text")[0][0]
+
+    # The ego's pose, which the chase view follows: its position and its yaw.
+    pose = read_rrd(out, "/world/ego/pose")
+    translations = pose["/world/ego/pose:Transform3D:translation"].tolist()
+    assert len(translations) == 40 and np.allclose(translations[3][0], [3.0, -2.0, 0.1])
+    (x, y, z, w) = pose["/world/ego/pose:Transform3D:quaternion"][3][0]
+    assert abs(x) < 1e-6 and abs(y) < 1e-6
+    assert math.isclose(math.degrees(2 * math.atan2(z, w)), -13.0, abs_tol=1e-3)  # yaw 13, y flipped
 
     path = read_rrd(out, "/world/ego/driven_path", index=None)
     strip = path["/world/ego/driven_path:LineStrips3D:strips"][0][0]
@@ -189,7 +248,7 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
 def test_simd_json_gives_the_same_recording(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     a = acsr.convert(v2_log, tmp_path / "a.rrd", parser="serde_json")
     b = acsr.convert(v2_log, tmp_path / "b.rrd", parser="simd_json")
-    for key in ("ticks", "actors", "actor_rows", "markers", "conditions", "lines"):
+    for key in ("ticks", "actors", "actor_rows", "markers", "conditions", "actions", "lines"):
         assert a[key] == b[key]
     da = read_rrd(tmp_path / "a.rrd", "/world/**")
     db = read_rrd(tmp_path / "b.rrd", "/world/**")
@@ -369,6 +428,27 @@ def test_rerun_verifies_the_recordings(v1_log: Path, v2_log: Path, tmp_path: Pat
         pytest.skip("no rerun executable beside the interpreter")
     done = subprocess.run([str(rerun), "rrd", "verify", *map(str, outs)], capture_output=True, text=True)
     assert done.returncode == 0, done.stdout + done.stderr
+
+
+def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None:
+    """The blueprint is in the file, active: a chase view on the ego and the
+    state timelines of the conditions and the actions; the rest is left to
+    the blueprint panel."""
+    import subprocess
+    import sys
+
+    out = tmp_path / "v2.rrd"
+    acsr.convert(v2_log, out)
+    rerun = Path(sys.executable).with_name("rerun")
+    if not rerun.exists():
+        pytest.skip("no rerun executable beside the interpreter")
+    done = subprocess.run([str(rerun), "rrd", "print", "--verbose", str(out)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    text = done.stdout
+    assert f'StoreId(Blueprint, "autoware_carla_scenario", "{v2_log.name.split(".")[0]}.blueprint"), make_active: true' in text
+    assert text.count("ViewBlueprint:class_identifier") == 3
+    for expected in ("/world/ego/pose@Transform3D", "EyeControls3D:position", "EyeControls3D:look_target"):
+        assert expected in text, expected
 
 
 # ---------------------------------------------------------------------------

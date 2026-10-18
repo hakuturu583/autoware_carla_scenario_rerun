@@ -12,13 +12,20 @@
 //! | `world/actors` | every vehicle and walker, a `Boxes3D` batch per tick; sizes, labels (`id type_id role`) and colours when the set of actors changes |
 //! | `world/actors/velocity` | their velocities, `Arrows3D` from the box centres |
 //! | `world/actors/events` | spawned / gone (at the `actor_gone` record's frame when there is one), `TextLog` |
+//! | `world/ego/pose` | the ego's position and yaw (`Transform3D`): the chase view follows it |
 //! | `world/ego/driven_path` | the ego's path (static `LineStrips3D`, a point every 0.5 m) |
 //! | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (`markers` records), held until the next |
 //! | `ego/speed_mps`, `ego/control` | the ego's speed, and throttle/steer/brake (`Scalars`) |
-//! | `world/traffic_lights` | the light heads (static boxes) coloured by state over time |
+//! | `world/traffic_lights` | the light heads, wireframe boxes (static) |
+//! | `world/traffic_lights/bulbs` | three bulbs per head (red, yellow, green), the one the state names lit |
+//! | `world/traffic_lights/tags` | each light's Lanelet2 id (else `carla <id>`) and state, written above it in the light's colour |
 //! | `world/traffic_lights/stops` | their stop-line waypoints (static `Points3D`) |
 //! | `world/traffic_lights/states` | the state changes, `TextLog` |
 //! | `conditions/<role>/<index>` | 1 while a pass/fail condition is satisfied, 0 while not (`condition` records, carried forward) |
+//! | `scenario/progress` | running, then the verdict (`StateChange`, for the state timeline view) |
+//! | `scenario/actions/<label>` | each action's lifecycle (standby, start, running, end, complete), from the `action` records (`StateChange`) |
+//! | `scenario/conditions/<role>/<label>` | satisfied / not satisfied, from the `condition` records (`StateChange`) |
+//! | `scenario/traffic_lights/<id>` | each light's state over time (`StateChange`) |
 //! | `result`, `result/log`, `result/passed` | the verdict |
 //! | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
 //! | `diagnostics/...` | what the conversion skipped or could not find, `TextLog` WARN (static) |
@@ -28,8 +35,8 @@ use std::path::Path;
 
 use rerun::{
     Arrows3D, Boxes3D, Color, LineStrips3D, Points3D, Quaternion, RecordingStream,
-    RecordingStreamBuilder, Scalars, SeriesLines, TextDocument, TextLog, TimeColumn,
-    ViewCoordinates,
+    RecordingStreamBuilder, Scalars, SeriesLines, StateChange, StateConfiguration, TextDocument,
+    TextLog, TimeColumn, Transform3D, ViewCoordinates,
 };
 
 use crate::generated as g;
@@ -49,6 +56,17 @@ const VEHICLE_COLOR: [u8; 3] = [64, 160, 255];
 const WALKER_COLOR: [u8; 3] = [255, 200, 0];
 const DRIVEN_PATH_COLOR: [u8; 3] = [255, 128, 0];
 const STOP_LINE_COLOR: [u8; 3] = [255, 255, 255];
+const HOUSING_COLOR: [u8; 3] = [150, 150, 150];
+/// The bulbs off: red, yellow, green, dimmed.
+const BULB_DIM: [[u8; 3]; 3] = [[70, 0, 0], [70, 56, 0], [0, 62, 0]];
+/// How far above a light's highest head its id and state are written, metres.
+const LIGHT_TAG_HEIGHT_M: f64 = 0.8;
+const RUNNING_COLOR: [u8; 3] = [64, 160, 255];
+const PASSED_COLOR: [u8; 3] = [0, 200, 80];
+const FAILED_COLOR: [u8; 3] = [230, 50, 50];
+const START_COLOR: [u8; 3] = [255, 200, 0];
+const END_COLOR: [u8; 3] = [255, 140, 0];
+const UNSATISFIED_COLOR: [u8; 3] = [90, 90, 90];
 
 fn rgb(c: [u8; 3]) -> Color {
     Color::from_rgb(c[0], c[1], c[2])
@@ -150,6 +168,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     let mut markers: Vec<&g::MarkersRecord> = Vec::new();
     let mut gone: Vec<&g::ActorGoneRecord> = Vec::new();
     let mut conditions: BTreeMap<(String, u64), Vec<&g::ConditionRecord>> = BTreeMap::new();
+    let mut actions: BTreeMap<(String, u64), Vec<&g::ActionRecord>> = BTreeMap::new();
     let mut world = None;
     let mut map_record = None;
     let mut warmup = None;
@@ -175,6 +194,12 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
                     .or_default()
                     .push(r);
             }
+            Record::Action(r) => {
+                actions
+                    .entry((r.phase.to_string(), r.index))
+                    .or_default()
+                    .push(r);
+            }
             Record::Result(r) => result = Some(r),
         }
     }
@@ -183,16 +208,22 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     write_info(&mut w, parsed, world, map_record, warmup)?;
     let ticks = &parsed.ticks;
     let ego = ego_id(parsed, &actors);
+    crate::layout::send(&w.rec, APPLICATION_ID, inputs.recording_id, ego.is_some())?;
     write_actors(&mut w, ticks, &actors, &gone)?;
     if let Some(ego) = ego {
         write_ego(&mut w, ticks, ego)?;
     }
-    write_lights(&mut w, ticks, &lights)?;
+    let names = light_names(&lights, inputs.map.as_ref());
+    write_lights(&mut w, ticks, &lights, &names)?;
     write_markers(&mut w, &markers)?;
     write_conditions(&mut w, ticks, &conditions)?;
     if let Some(result) = result {
         write_result(&mut w, ticks, result)?;
     }
+    write_progress(&mut w, ticks, result)?;
+    write_condition_states(&mut w, &conditions)?;
+    write_action_states(&mut w, &actions)?;
+    write_light_states(&mut w, ticks, &names)?;
     if let Some(map) = &inputs.map {
         write_map(&mut w, map)?;
     }
@@ -487,6 +518,7 @@ fn write_actors(
 
 fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {
     let (mut frames, mut times, mut speeds) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut translations, mut rotations) = (Vec::new(), Vec::new());
     let mut path: Vec<[f64; 3]> = Vec::new();
     for i in 0..ticks.len() {
         for r in ticks.actors(i) {
@@ -498,6 +530,16 @@ fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {
             times.push(ticks.t[i]);
             speeds.push((vx * vx + vy * vy + vz * vz).sqrt());
             let p = crate::scene::point(ticks.position[r]);
+            // The yaw alone: a chase eye that rolls and pitches with the car
+            // shakes.
+            let q = quaternion(0.0, 0.0, ticks.rotation[r][2]);
+            translations.push([p[0] as f32, p[1] as f32, p[2] as f32]);
+            rotations.push(Quaternion::from_xyzw([
+                q[0] as f32,
+                q[1] as f32,
+                q[2] as f32,
+                q[3] as f32,
+            ]));
             let far = path.last().is_none_or(|last| {
                 let d = [p[0] - last[0], p[1] - last[1], p[2] - last[2]];
                 (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() >= DRIVEN_PATH_STEP_M
@@ -507,6 +549,12 @@ fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {
             }
         }
     }
+    let pose = Transform3D::update_fields()
+        .with_many_translation(translations)
+        .with_many_quaternion(rotations)
+        .columns_of_unit_batches()
+        .map_err(err)?;
+    w.columns(crate::layout::EGO_POSE, &frames, &times, pose)?;
     w.columns(
         "ego/speed_mps",
         &frames,
@@ -547,15 +595,150 @@ fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {
     Ok(())
 }
 
-fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]) -> RrResult<()> {
+/// How far a Lanelet2 light or stop line may be from a CARLA light's heads
+/// or stop waypoints (in plan) to be taken for it, metres.
+pub const LIGHT_MATCH_M: f64 = 3.0;
+
+/// Distance in plan from `p` to the polyline `line`.
+fn plan_distance(p: [f64; 3], line: &[[f64; 3]]) -> f64 {
+    let d = |a: [f64; 3], b: [f64; 3]| {
+        let (vx, vy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = vx * vx + vy * vy;
+        let t = if len2 > 0.0 {
+            (((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p[0] - a[0] - t * vx).hypot(p[1] - a[1] - t * vy)
+    };
+    match line {
+        [] => f64::INFINITY,
+        [a] => d(*a, *a),
+        _ => line
+            .windows(2)
+            .map(|w| d(w[0], w[1]))
+            .fold(f64::INFINITY, f64::min),
+    }
+}
+
+/// What each CARLA light is called: the ids of the Lanelet2 traffic-light
+/// regulatory elements that are its (`1234` or `1234,1240`), else
+/// `carla <id>`.
+///
+/// An element is a light's when one of its lights is within
+/// [`LIGHT_MATCH_M`] of one of the light's heads, or one of its stop lines of
+/// one of the light's stop waypoints; of several lights, the nearest's.
+fn light_names(
+    lights: &[&g::TrafficLightRecord],
+    map: Option<&MapLayer<'_>>,
+) -> HashMap<u32, String> {
+    let mut ids: HashMap<u32, Vec<i64>> = HashMap::new();
+    if let Some(map) = map {
+        let [ox, oy, oz] = map.offset;
+        let place = |line: &Vec<[f64; 3]>| -> Vec<[f64; 3]> {
+            line.iter()
+                .map(|p| [p[0] - ox, p[1] - oy, p[2] - oz])
+                .collect()
+        };
+        // Each light's id, heads and stop waypoints, in the recording's frame.
+        type Points = Vec<[f64; 3]>;
+        let carla: Vec<(u32, Points, Points)> = lights
+            .iter()
+            .map(|l| {
+                let heads = l
+                    .boxes
+                    .iter()
+                    .map(|b| crate::scene::point([b.0 .0, b.0 .1, b.0 .2]))
+                    .collect();
+                let stops = l
+                    .stops
+                    .iter()
+                    .map(|s| crate::scene::point([s.0 .0, s.0 .1, s.0 .2]))
+                    .collect();
+                (l.id.0, heads, stops)
+            })
+            .collect();
+        for element in &map.geometry.traffic_lights {
+            let bulbs: Vec<Vec<[f64; 3]>> = element.lights.iter().map(place).collect();
+            let stop_lines: Vec<Vec<[f64; 3]>> = element.stop_lines.iter().map(place).collect();
+            let nearest = |points: &[[f64; 3]], lines: &[Vec<[f64; 3]>]| {
+                points
+                    .iter()
+                    .flat_map(|p| lines.iter().map(|l| plan_distance(*p, l)))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            let best = carla
+                .iter()
+                .map(|(id, heads, stops)| {
+                    let d = nearest(heads, &bulbs).min(nearest(stops, &stop_lines));
+                    (d, *id)
+                })
+                .filter(|(d, _)| *d <= LIGHT_MATCH_M)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, id)) = best {
+                ids.entry(id).or_default().push(element.id);
+            }
+        }
+    }
+    lights
+        .iter()
+        .map(|l| {
+            let id = l.id.0;
+            let name = match ids.get(&id) {
+                Some(found) => found
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                None => format!("carla {id}"),
+            };
+            (id, name)
+        })
+        .collect()
+}
+
+/// A light's name, for a light the log did not describe too.
+fn light_name(names: &HashMap<u32, String>, id: u32) -> String {
+    names
+        .get(&id)
+        .cloned()
+        .unwrap_or_else(|| format!("carla {id}"))
+}
+
+/// A light head's three bulbs, top to bottom: red, yellow, green; the one
+/// the state names lit, the others dim.
+fn bulb_colors(state: LightState) -> [Color; 3] {
+    let dim = [rgb(BULB_DIM[0]), rgb(BULB_DIM[1]), rgb(BULB_DIM[2])];
+    let lit = |i: usize| {
+        let mut c = dim;
+        c[i] = light_color(state);
+        c
+    };
+    match state {
+        LightState::Red => lit(0),
+        LightState::Yellow => lit(1),
+        LightState::Green => lit(2),
+        LightState::Off => dim,
+        LightState::Unknown => [light_color(state); 3],
+    }
+}
+
+fn write_lights(
+    w: &mut Writer,
+    ticks: &Ticks,
+    lights: &[&g::TrafficLightRecord],
+    names: &HashMap<u32, String>,
+) -> RrResult<()> {
     if lights.is_empty() {
         return Ok(());
     }
     let (mut centers, mut half_sizes, mut quats) = (Vec::new(), Vec::new(), Vec::new());
-    let (mut stops, mut stop_labels) = (Vec::new(), Vec::new());
+    let (mut bulbs, mut bulb_radii) = (Vec::new(), Vec::new());
+    let (mut tags, mut stops, mut stop_labels) = (Vec::new(), Vec::new(), Vec::new());
     let mut heads: Vec<(u32, usize)> = Vec::new();
     for light in lights {
         heads.push((light.id.0, light.boxes.len()));
+        let mut top = light.location.0 .2;
         for b in &light.boxes {
             let (x, y, z, ex, ey, ez, yaw) = b.0;
             centers.push(point32([x, y, z]));
@@ -567,23 +750,45 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
                 q[2] as f32,
                 q[3] as f32,
             ]));
+            // Three bulbs stacked in the head, a third of its height apart.
+            let radius = (ex.min(ey).min(ez / 3.0) * 0.9) as f32;
+            for k in [1.0, 0.0, -1.0] {
+                bulbs.push(point32([x, y, z + k * ez * 2.0 / 3.0]));
+                bulb_radii.push(radius);
+            }
+            top = top.max(z + ez);
         }
+        let (x, y, _) = light.location.0;
+        tags.push(point32([x, y, top + LIGHT_TAG_HEIGHT_M]));
         for s in &light.stops {
             let (x, y, z, _yaw) = s.0;
             stops.push(point32([x, y, z + 0.05]));
-            stop_labels.push(format!("{}", light.id.0));
+            stop_labels.push(names[&light.id.0].clone());
         }
     }
     if !centers.is_empty() {
-        // Static but for the colours, which are the lights' states: a static
-        // component would hide every temporal one.
         w.fixed(
             "world/traffic_lights",
             &Boxes3D::from_centers_and_half_sizes(centers, half_sizes)
                 .with_quaternions(quats)
-                .with_fill_mode(rerun::FillMode::Solid),
+                .with_colors([rgb(HOUSING_COLOR)])
+                .with_fill_mode(rerun::FillMode::MajorWireframe),
+        )?;
+        // Static but for the colours, which are the lights' states: a static
+        // component would hide every temporal one.
+        w.fixed(
+            "world/traffic_lights/bulbs",
+            &Points3D::new(bulbs).with_radii(bulb_radii),
         )?;
     }
+    // Where each light's id and state is written; the text and its colour
+    // (the light's) change with the state.
+    w.fixed(
+        "world/traffic_lights/tags",
+        &Points3D::new(tags)
+            .with_radii([0.05])
+            .with_show_labels(true),
+    )?;
     if !stops.is_empty() {
         w.fixed(
             "world/traffic_lights/stops",
@@ -597,6 +802,7 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
     let mut state: HashMap<u32, LightState> = HashMap::new();
     let (mut frames, mut times, mut colors, mut texts) =
         (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut labels, mut label_colors) = (Vec::new(), Vec::new());
     let mut k = 0;
     while k < ticks.lights.len() {
         let tick = ticks.lights[k].tick;
@@ -604,24 +810,34 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
         while k < ticks.lights.len() && ticks.lights[k].tick == tick {
             let c = ticks.lights[k];
             state.insert(c.id, c.state);
-            changed.push(format!("{}={:?}", c.id, c.state));
+            changed.push(format!("{}={:?}", light_name(names, c.id), c.state));
             k += 1;
         }
         frames.push(ticks.frame[tick as usize]);
         times.push(ticks.t[tick as usize]);
         for (id, n) in &heads {
-            let color = light_color(state.get(id).copied().unwrap_or(LightState::Unknown));
-            colors.extend(std::iter::repeat_n(color, *n));
+            let s = state.get(id).copied().unwrap_or(LightState::Unknown);
+            for _ in 0..*n {
+                colors.extend(bulb_colors(s));
+            }
+            labels.push(format!("{} {s}", names[id]));
+            label_colors.push(light_color(s));
         }
         texts.push(changed.join(", "));
     }
     if total > 0 {
-        let columns = Boxes3D::update_fields()
+        let columns = Points3D::update_fields()
             .with_colors(colors)
-            .columns(std::iter::repeat_n(total, frames.len()))
+            .columns(std::iter::repeat_n(3 * total, frames.len()))
             .map_err(err)?;
-        w.columns("world/traffic_lights", &frames, &times, columns)?;
+        w.columns("world/traffic_lights/bulbs", &frames, &times, columns)?;
     }
+    let columns = Points3D::update_fields()
+        .with_labels(labels)
+        .with_colors(label_colors)
+        .columns(std::iter::repeat_n(heads.len(), frames.len()))
+        .map_err(err)?;
+    w.columns("world/traffic_lights/tags", &frames, &times, columns)?;
     let columns = TextLog::update_fields()
         .with_many_text(texts)
         .columns_of_unit_batches()
@@ -780,6 +996,266 @@ fn write_result(w: &mut Writer, ticks: &Ticks, result: &g::ResultRecord) -> RrRe
     w.columns("result/passed", &[frame], &[t], columns)
 }
 
+/// Logs `states` on `path` as a `StateChange` per row, with how the state
+/// timeline view shows each value (`(value, label, colour)`, static).
+fn write_states(
+    w: &mut Writer,
+    path: &str,
+    styles: &[(&str, String, [u8; 3])],
+    frames: &[i64],
+    times: &[f64],
+    states: Vec<String>,
+) -> RrResult<()> {
+    if frames.is_empty() {
+        return Ok(());
+    }
+    w.fixed(
+        path,
+        &StateConfiguration::new()
+            .with_values(styles.iter().map(|(v, _, _)| *v))
+            .with_labels(styles.iter().map(|(_, l, _)| l.as_str()))
+            .with_colors(styles.iter().map(|(_, _, c)| rgb(*c))),
+    )?;
+    let columns = StateChange::update_fields()
+        .with_state(states)
+        .columns_of_unit_batches()
+        .map_err(err)?;
+    w.columns(path, frames, times, columns)
+}
+
+/// The run as a whole: running from its first tick, then its verdict.
+fn write_progress(w: &mut Writer, ticks: &Ticks, result: Option<&g::ResultRecord>) -> RrResult<()> {
+    let (Some(&first), Some(&t0)) = (ticks.frame.first(), ticks.t.first()) else {
+        return Ok(());
+    };
+    let (mut frames, mut times, mut states) = (vec![first], vec![t0], vec!["running".to_string()]);
+    if let Some(result) = result {
+        let verdict = if result.passed { "passed" } else { "failed" };
+        // At the last tick: the run's verdict is what its end decided.
+        let (frame, t) = (*ticks.frame.last().unwrap(), *ticks.t.last().unwrap());
+        if frame == first {
+            states[0] = verdict.to_string();
+        } else {
+            frames.push(frame);
+            times.push(t);
+            states.push(verdict.to_string());
+        }
+    }
+    write_states(
+        w,
+        "scenario/progress",
+        &[
+            ("running", "running".into(), RUNNING_COLOR),
+            ("passed", "PASSED".into(), PASSED_COLOR),
+            ("failed", "FAILED".into(), FAILED_COLOR),
+        ],
+        &frames,
+        &times,
+        states,
+    )
+}
+
+/// Each action's lifecycle state, OpenSCENARIO's: standby, the tick it
+/// started on, running, the tick it ended on, complete.
+fn write_action_states(
+    w: &mut Writer,
+    actions: &BTreeMap<(String, u64), Vec<&g::ActionRecord>>,
+) -> RrResult<()> {
+    let lanes = lane_names(
+        actions
+            .iter()
+            .map(|((phase, index), records)| {
+                (
+                    String::new(),
+                    records[0].label.as_str(),
+                    format!("{phase}_{index}"),
+                )
+            })
+            .collect(),
+    );
+    for ((_, records), lane) in actions.iter().zip(&lanes) {
+        let (mut frames, mut times, mut states) = (Vec::new(), Vec::new(), Vec::new());
+        for r in records {
+            let state = r.state.to_string();
+            if frames.last() == Some(&r.frame.0) {
+                *states.last_mut().unwrap() = state;
+            } else {
+                frames.push(r.frame.0);
+                times.push(r.t);
+                states.push(state);
+            }
+        }
+        write_states(
+            w,
+            &format!("scenario/actions/{lane}"),
+            &[
+                ("standbyState", "standby".into(), UNSATISFIED_COLOR),
+                ("startTransition", "start".into(), START_COLOR),
+                ("runningState", "running".into(), RUNNING_COLOR),
+                ("endTransition", "end".into(), END_COLOR),
+                ("completeState", "complete".into(), PASSED_COLOR),
+            ],
+            &frames,
+            &times,
+            states,
+        )?;
+    }
+    Ok(())
+}
+
+/// A condition's lane name: its label (the view names a lane by its entity
+/// path), with what a path part would have to escape -- spaces, brackets --
+/// as `_`: `ego stopped AND green` -> `ego_stopped_AND_green`. `None` for a
+/// label with nothing left.
+fn condition_lane(label: &str) -> Option<String> {
+    let mut name = String::new();
+    let mut gap = false;
+    for c in label.chars() {
+        if c.is_alphanumeric() || matches!(c, '-' | '.') {
+            if gap && !name.is_empty() {
+                name.push('_');
+            }
+            name.push(c);
+            gap = false;
+        } else {
+            gap = true;
+        }
+    }
+    (!name.is_empty()).then_some(name)
+}
+
+/// The lanes of `items` (`(group, label, place)`, a group being a path
+/// prefix), one each and no two alike: `group` and the label's
+/// [`condition_lane`] name; its `place` too (`name_place`) when another of
+/// the group has that name, the place alone without one. A name that is still
+/// taken -- another's label reads `0` or `cut_in_1` -- gets `_2`, `_3`, ...:
+/// two histories in one lane would read as one.
+fn lane_names(items: Vec<(String, &str, String)>) -> Vec<String> {
+    let bases: Vec<Option<String>> = items
+        .iter()
+        .map(|(group, label, _)| condition_lane(label).map(|n| format!("{group}{n}")))
+        .collect();
+    let mut used = std::collections::HashSet::new();
+    items
+        .iter()
+        .zip(&bases)
+        .map(|((group, _, place), base)| {
+            let name = match base {
+                Some(n) if bases.iter().filter(|b| *b == base).count() > 1 => {
+                    format!("{n}_{place}")
+                }
+                Some(n) => n.clone(),
+                None => format!("{group}{place}"),
+            };
+            let mut lane = name.clone();
+            let mut k = 2;
+            while !used.insert(lane.clone()) {
+                lane = format!("{name}_{k}");
+                k += 1;
+            }
+            lane
+        })
+        .collect()
+}
+
+/// Each pass/fail condition's state as the run checked it: a pass condition
+/// satisfied is green, a fail condition satisfied red.
+fn write_condition_states(
+    w: &mut Writer,
+    conditions: &BTreeMap<(String, u64), Vec<&g::ConditionRecord>>,
+) -> RrResult<()> {
+    let lanes = lane_names(
+        conditions
+            .iter()
+            .map(|((role, index), records)| {
+                (
+                    format!("{role}/"),
+                    records[0].label.as_str(),
+                    index.to_string(),
+                )
+            })
+            .collect(),
+    );
+    for (((role, _), records), lane) in conditions.iter().zip(&lanes) {
+        let satisfied = if role == "fail" {
+            FAILED_COLOR
+        } else {
+            PASSED_COLOR
+        };
+        let (mut frames, mut times, mut states) = (Vec::new(), Vec::new(), Vec::new());
+        for r in records {
+            let state = if r.satisfied {
+                "satisfied"
+            } else {
+                "not_satisfied"
+            };
+            // Two records on a frame: the later is the state the tick ended in.
+            if frames.last() == Some(&r.frame.0) {
+                *states.last_mut().unwrap() = state.to_string();
+            } else {
+                frames.push(r.frame.0);
+                times.push(r.t);
+                states.push(state.to_string());
+            }
+        }
+        write_states(
+            w,
+            &format!("scenario/conditions/{lane}"),
+            &[
+                ("satisfied", "satisfied".into(), satisfied),
+                ("not_satisfied", "not satisfied".into(), UNSATISFIED_COLOR),
+            ],
+            &frames,
+            &times,
+            states,
+        )?;
+    }
+    Ok(())
+}
+
+/// Each traffic light's state, from the ticks that change one.
+fn write_light_states(w: &mut Writer, ticks: &Ticks, names: &HashMap<u32, String>) -> RrResult<()> {
+    type Lane = (Vec<i64>, Vec<f64>, Vec<String>);
+    let mut lanes: BTreeMap<u32, Lane> = BTreeMap::new();
+    for c in &ticks.lights {
+        let (frames, times, states) = lanes.entry(c.id).or_default();
+        frames.push(ticks.frame[c.tick as usize]);
+        times.push(ticks.t[c.tick as usize]);
+        states.push(c.state.to_string());
+    }
+    let state_names: Vec<(LightState, String)> = [
+        LightState::Red,
+        LightState::Yellow,
+        LightState::Green,
+        LightState::Off,
+        LightState::Unknown,
+    ]
+    .into_iter()
+    .map(|s| (s, s.to_string()))
+    .collect();
+    let styles: Vec<(&str, String, [u8; 3])> = state_names
+        .iter()
+        .map(|(s, name)| {
+            let [r, g_, b, _] = light_color(*s).to_array();
+            (name.as_str(), name.clone(), [r, g_, b])
+        })
+        .collect();
+    for (id, (frames, times, states)) in lanes {
+        write_states(
+            w,
+            &format!(
+                "scenario/traffic_lights/{}",
+                light_name(names, id).replace([',', ' '], "_")
+            ),
+            &styles,
+            &frames,
+            &times,
+            states,
+        )?;
+    }
+    Ok(())
+}
+
 fn write_map(w: &mut Writer, map: &MapLayer<'_>) -> RrResult<()> {
     let [ox, oy, oz] = map.offset;
     let place = |p: &[f64; 3]| [(p[0] - ox) as f32, (p[1] - oy) as f32, (p[2] - oz) as f32];
@@ -819,4 +1295,114 @@ fn write_map(w: &mut Writer, map: &MapLayer<'_>) -> RrResult<()> {
         )?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{condition_lane, light_names, MapLayer};
+    use crate::generated as g;
+    use crate::map::{MapGeometry, TrafficLightElement};
+
+    fn light(id: u32, head: [f64; 3], stop: [f64; 3]) -> g::TrafficLightRecord {
+        serde_json::from_value(serde_json::json!({
+            "type": "traffic_light", "id": id, "opendrive_id": "1", "location": head,
+            "boxes": [[head[0], head[1], head[2], 0.2, 0.2, 0.6, 90.0]],
+            "stops": [[stop[0], stop[1], stop[2], 0.0]],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn lights_are_named_by_their_lanelet2_elements() {
+        // CARLA's y is flipped in the recording, and the map is placed by
+        // its offset: a map point (x, y) lands at (x - 10, y - 20).
+        let a = light(77, [30.0, 5.0, 5.0], [25.0, 3.0, 0.0]);
+        let b = light(78, [-40.0, 0.0, 5.0], [-35.0, 0.0, 0.0]);
+        let c = light(79, [100.0, 100.0, 5.0], [95.0, 100.0, 0.0]);
+        let element =
+            |id, lights: Vec<Vec<[f64; 3]>>, stops: Vec<Vec<[f64; 3]>>| TrafficLightElement {
+                id,
+                lights,
+                stop_lines: stops,
+            };
+        let geometry = MapGeometry {
+            traffic_lights: vec![
+                // By its light, 0.5 m from 77's head.
+                element(
+                    1001,
+                    vec![vec![[40.5, 14.0, 6.0], [40.5, 16.0, 6.0]]],
+                    vec![],
+                ),
+                // By its stop line, across 77's stop waypoint.
+                element(
+                    1002,
+                    vec![],
+                    vec![vec![[35.0, 15.0, 1.0], [35.0, 19.0, 1.0]]],
+                ),
+                // Nearer 78 than 77.
+                element(1003, vec![vec![[-29.0, 20.0, 6.0]]], vec![]),
+                // Nobody's: 50 m from every light.
+                element(1004, vec![vec![[90.0, 15.0, 6.0]]], vec![]),
+            ],
+            ..MapGeometry::default()
+        };
+        let map = MapLayer {
+            geometry: &geometry,
+            offset: [10.0, 20.0, 1.0],
+        };
+        let names = light_names(&[&a, &b, &c], Some(&map));
+        assert_eq!(names[&77], "1001,1002");
+        assert_eq!(names[&78], "1003");
+        assert_eq!(names[&79], "carla 79");
+        assert_eq!(light_names(&[&a], None)[&77], "carla 77");
+    }
+
+    #[test]
+    fn lanes_never_share_a_name() {
+        let lanes = |items: &[(&str, &str, &str)]| {
+            super::lane_names(
+                items
+                    .iter()
+                    .map(|(g, l, p)| (g.to_string(), *l, p.to_string()))
+                    .collect(),
+            )
+        };
+        // By label; the place for a shared label, or for none.
+        assert_eq!(
+            lanes(&[
+                ("pass/", "goal", "0"),
+                ("pass/", "a", "1"),
+                ("pass/", "a", "2"),
+                ("fail/", "a", "0")
+            ]),
+            ["pass/goal", "pass/a_1", "pass/a_2", "fail/a"]
+        );
+        // A label of nothing falls back to its place, which another's label may be.
+        assert_eq!(
+            lanes(&[("pass/", "()", "0"), ("pass/", "0", "1")]),
+            ["pass/0", "pass/0_2"]
+        );
+        assert_eq!(
+            lanes(&[("", "!", "pre_tick_0"), ("", "pre_tick_0", "post_tick_0")]),
+            ["pre_tick_0", "pre_tick_0_2"]
+        );
+        // A suffixed name another label already reads.
+        assert_eq!(
+            lanes(&[("", "a_1", "x_0"), ("", "a", "1"), ("", "a", "2")]),
+            ["a_1", "a_1_2", "a_2"]
+        );
+    }
+
+    #[test]
+    fn condition_lanes_are_named_by_their_labels() {
+        assert_eq!(
+            condition_lane("reached_goal").as_deref(),
+            Some("reached_goal")
+        );
+        assert_eq!(
+            condition_lane("  ego stopped (in zone) AND green ").as_deref(),
+            Some("ego_stopped_in_zone_AND_green")
+        );
+        assert_eq!(condition_lane(" () "), None);
+    }
 }

@@ -19,6 +19,7 @@
 pub mod generated;
 
 pub mod convert;
+pub mod layout;
 pub mod map;
 pub mod parse;
 pub mod rrd;

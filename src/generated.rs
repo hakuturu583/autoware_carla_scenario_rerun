@@ -2,6 +2,150 @@
 // schema/trajectory.schema.json. Do not edit: change the schema and regenerate.
 #![allow(clippy::all, clippy::pedantic, missing_docs, dead_code, unused_imports)]
 
+///A scenario action's lifecycle state on a tick, written when it changes (version 2): on the first tick of the loop, then whenever the action moves on -- `standbyState`, `startTransition` (the tick its trigger fired), `runningState`, `endTransition` (the tick it finished), `completeState`, or back to `standbyState` for a repeating action. The states are OpenSCENARIO's StoryboardElementState (`ActionState`). Init actions, run before the clock starts, are not written.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct ActionRecord {
+    ///The action's class (`LaneChangeAction`, `SetSpeedAction`, ...).
+    pub action_type: ::std::string::String,
+    ///The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).
+    pub frame: SafeUInt,
+    ///The action's place in its list, from 0: with `phase`, what identifies it.
+    pub index: u64,
+    ///The action's label, as the scenario named it.
+    pub label: ::std::string::String,
+    ///Which list the action is in: `pre_tick` actions act before `world.tick()`, `post_tick` after it.
+    pub phase: ActionRecordPhase,
+    ///Its `ActionState` after that tick.
+    pub state: ActionRecordState,
+    ///That tick's simulated time, seconds since the scenario clock started.
+    pub t: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///Which list the action is in: `pre_tick` actions act before `world.tick()`, `post_tick` after it.
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum ActionRecordPhase {
+    #[serde(rename = "pre_tick")]
+    PreTick,
+    #[serde(rename = "post_tick")]
+    PostTick,
+}
+impl ::std::fmt::Display for ActionRecordPhase {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::PreTick => f.write_str("pre_tick"),
+            Self::PostTick => f.write_str("post_tick"),
+        }
+    }
+}
+impl ::std::str::FromStr for ActionRecordPhase {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "pre_tick" => Ok(Self::PreTick),
+            "post_tick" => Ok(Self::PostTick),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ActionRecordPhase {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ActionRecordPhase {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+///Its `ActionState` after that tick.
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum ActionRecordState {
+    #[serde(rename = "standbyState")]
+    StandbyState,
+    #[serde(rename = "startTransition")]
+    StartTransition,
+    #[serde(rename = "runningState")]
+    RunningState,
+    #[serde(rename = "endTransition")]
+    EndTransition,
+    #[serde(rename = "completeState")]
+    CompleteState,
+}
+impl ::std::fmt::Display for ActionRecordState {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::StandbyState => f.write_str("standbyState"),
+            Self::StartTransition => f.write_str("startTransition"),
+            Self::RunningState => f.write_str("runningState"),
+            Self::EndTransition => f.write_str("endTransition"),
+            Self::CompleteState => f.write_str("completeState"),
+        }
+    }
+}
+impl ::std::str::FromStr for ActionRecordState {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "standbyState" => Ok(Self::StandbyState),
+            "startTransition" => Ok(Self::StartTransition),
+            "runningState" => Ok(Self::RunningState),
+            "endTransition" => Ok(Self::EndTransition),
+            "completeState" => Ok(Self::CompleteState),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for ActionRecordState {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for ActionRecordState {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
 ///A vehicle or walker that is no longer in the world (destroyed, or despawned by the traffic), written right before the first tick it is missing from (version 2). It is in no tick from then on.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 pub struct ActorGoneRecord {
@@ -421,7 +565,7 @@ pub struct MapRecord {
     #[serde(flatten)]
     pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
-///The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. They are what the video draws over the frames of the scenario.
+///The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. A viewer of the run draws them beside the path the ego drove.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 pub struct MarkersRecord {
     ///The ego actor they belong to, or null when there was no ego actor on that tick.
@@ -662,6 +806,7 @@ pub enum TrajectoryRecord {
     TickRecord(TickRecord),
     MarkersRecord(MarkersRecord),
     ConditionRecord(ConditionRecord),
+    ActionRecord(ActionRecord),
     ResultRecord(ResultRecord),
 }
 impl ::std::convert::From<WorldRecord> for TrajectoryRecord {
@@ -707,6 +852,11 @@ impl ::std::convert::From<MarkersRecord> for TrajectoryRecord {
 impl ::std::convert::From<ConditionRecord> for TrajectoryRecord {
     fn from(value: ConditionRecord) -> Self {
         Self::ConditionRecord(value)
+    }
+}
+impl ::std::convert::From<ActionRecord> for TrajectoryRecord {
+    fn from(value: ActionRecord) -> Self {
+        Self::ActionRecord(value)
     }
 }
 impl ::std::convert::From<ResultRecord> for TrajectoryRecord {
@@ -797,7 +947,7 @@ impl ::std::convert::From<(f64, f64, f64, i64)> for VehicleControl {
         Self(value)
     }
 }
-///Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording (and the video rendered from it) starts `ticks` frames earlier.
+///Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording starts `ticks` frames earlier.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 pub struct WarmupRecord {
     ///The CARLA frame the scenario clock started at: the frame of the first tick record, at t = 0.
@@ -805,7 +955,7 @@ pub struct WarmupRecord {
     ///The CARLA frame the recorder started at, or null when the run made no CARLA recording (then `ticks` is 0).
     #[serde(deserialize_with = "::std::option::Option::deserialize")]
     pub start_frame: ::std::option::Option<SafeUInt>,
-    ///How many world ticks the warm-up took, from the CARLA recorder's start to the scenario clock's: the first `ticks` frames of the recording (the video's frames captioned as warm-up).
+    ///How many world ticks the warm-up took, from the CARLA recorder's start to the scenario clock's: the first `ticks` frames of the recording.
     pub ticks: u64,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
@@ -870,6 +1020,7 @@ pub const RECORD_TYPES: &[(&str, &str)] = &[
     ("tick", "TickRecord"),
     ("markers", "MarkersRecord"),
     ("condition", "ConditionRecord"),
+    ("action", "ActionRecord"),
     ("result", "ResultRecord"),
 ];
 /// The format version the schema describes (`x-schema-version`).
@@ -890,6 +1041,13 @@ impl<T: UnknownFields> UnknownFields for ::std::vec::Vec<T> {
     fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
         for v in self {
             v.unknown_fields(path, out)
+        }
+    }
+}
+impl UnknownFields for ActionRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
         }
     }
 }

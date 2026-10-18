@@ -33,6 +33,9 @@
       "$ref": "#/$defs/ConditionRecord"
     },
     {
+      "$ref": "#/$defs/ActionRecord"
+    },
+    {
       "$ref": "#/$defs/ResultRecord"
     }
   ],
@@ -48,6 +51,7 @@
       "tick": "#/$defs/TickRecord",
       "markers": "#/$defs/MarkersRecord",
       "condition": "#/$defs/ConditionRecord",
+      "action": "#/$defs/ActionRecord",
       "result": "#/$defs/ResultRecord"
     }
   },
@@ -225,14 +229,14 @@
     },
     "WarmupRecord": {
       "title": "WarmupRecord",
-      "description": "Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording (and the video rendered from it) starts `ticks` frames earlier.",
+      "description": "Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording starts `ticks` frames earlier.",
       "type": "object",
       "properties": {
         "type": {
           "const": "warmup"
         },
         "ticks": {
-          "description": "How many world ticks the warm-up took, from the CARLA recorder's start to the scenario clock's: the first `ticks` frames of the recording (the video's frames captioned as warm-up).",
+          "description": "How many world ticks the warm-up took, from the CARLA recorder's start to the scenario clock's: the first `ticks` frames of the recording.",
           "type": "integer",
           "minimum": 0
         },
@@ -383,7 +387,7 @@
     },
     "MarkersRecord": {
       "title": "MarkersRecord",
-      "description": "The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. They are what the video draws over the frames of the scenario.",
+      "description": "The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. A viewer of the run draws them beside the path the ego drove.",
       "type": "object",
       "properties": {
         "type": {
@@ -471,6 +475,67 @@
         "index",
         "label",
         "satisfied"
+      ],
+      "additionalProperties": false
+    },
+    "ActionRecord": {
+      "title": "ActionRecord",
+      "description": "A scenario action's lifecycle state on a tick, written when it changes (version 2): on the first tick of the loop, then whenever the action moves on -- `standbyState`, `startTransition` (the tick its trigger fired), `runningState`, `endTransition` (the tick it finished), `completeState`, or back to `standbyState` for a repeating action. The states are OpenSCENARIO's StoryboardElementState (`ActionState`). Init actions, run before the clock starts, are not written.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "action"
+        },
+        "frame": {
+          "description": "The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        },
+        "phase": {
+          "description": "Which list the action is in: `pre_tick` actions act before `world.tick()`, `post_tick` after it.",
+          "type": "string",
+          "enum": [
+            "pre_tick",
+            "post_tick"
+          ]
+        },
+        "index": {
+          "description": "The action's place in its list, from 0: with `phase`, what identifies it.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "label": {
+          "description": "The action's label, as the scenario named it.",
+          "type": "string"
+        },
+        "action_type": {
+          "description": "The action's class (`LaneChangeAction`, `SetSpeedAction`, ...).",
+          "type": "string"
+        },
+        "state": {
+          "description": "Its `ActionState` after that tick.",
+          "type": "string",
+          "enum": [
+            "standbyState",
+            "startTransition",
+            "runningState",
+            "endTransition",
+            "completeState"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "phase",
+        "index",
+        "label",
+        "action_type",
+        "state"
       ],
       "additionalProperties": false
     },

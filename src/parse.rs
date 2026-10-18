@@ -42,6 +42,7 @@ pub const HANDLED_TYPES: &[&str] = &[
     "tick",
     "markers",
     "condition",
+    "action",
     "result",
 ];
 
@@ -180,6 +181,7 @@ pub enum Record {
     ActorGone(g::ActorGoneRecord),
     Markers(g::MarkersRecord),
     Condition(g::ConditionRecord),
+    Action(g::ActionRecord),
     Result(g::ResultRecord),
 }
 
@@ -444,6 +446,7 @@ impl Record {
             Record::ActorGone(r) => r.unknown_fields("actor_gone", out),
             Record::Markers(r) => r.unknown_fields("markers", out),
             Record::Condition(r) => r.unknown_fields("condition", out),
+            Record::Action(r) => r.unknown_fields("action", out),
             Record::Result(r) => r.unknown_fields("result", out),
         }
     }
@@ -516,6 +519,7 @@ fn parse_chunk(chunk: &[u8], options: &ParseOptions) -> Result<ChunkOut, LineErr
             b"actor_gone" => Some(record(parser, line, &mut scratch).map(Record::ActorGone)),
             b"markers" => Some(record(parser, line, &mut scratch).map(Record::Markers)),
             b"condition" => Some(record(parser, line, &mut scratch).map(Record::Condition)),
+            b"action" => Some(record(parser, line, &mut scratch).map(Record::Action)),
             b"result" => Some(record(parser, line, &mut scratch).map(Record::Result)),
             other => {
                 // Skipped, but only if it is JSON: a broken line is an error

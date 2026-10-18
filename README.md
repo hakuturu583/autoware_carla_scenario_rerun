@@ -37,7 +37,7 @@ Both functions release the GIL for all of their work, so a sweep can hand the
 previous case to a worker thread and go on with the next. Type stubs ship in
 the wheel (`_native.pyi`, `py.typed`); `Stats` is a `TypedDict`: `input`,
 `output`, `schema_version`, `bytes`, `lines`, `ticks`, `actors`, `actor_rows`,
-`traffic_lights`, `markers`, `conditions`, `has_result`, `map`, `map_cached`,
+`traffic_lights`, `markers`, `conditions`, `actions`, `has_result`, `map`, `map_cached`,
 `unknown_types` (`{type: lines}`), `unknown_first_lines`, `unknown_fields`
 (`{record.field: lines}`), `unknown_field_first_lines`, `null_numbers`, `warnings`,
 `rrd_bytes`, and the seconds spent parsing, reading the map and writing.
@@ -86,17 +86,49 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `world/actors` | every vehicle and walker, one `Boxes3D` batch per tick (centre and rotation each tick; sizes, `id type_id role` labels and colours whenever the set of actors changes) |
 | `world/actors/velocity` | their velocities (`Arrows3D` from the box centres) |
 | `world/actors/events` | spawned / gone (`TextLog`; gone at the `actor_gone` record's frame, the box too, even when that tick was not written) |
+| `world/ego/pose` | the ego's position and yaw (`Transform3D`), which the 3D view follows |
 | `world/ego/driven_path` | the ego's path, a point every 0.5 m (static) |
 | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (a planner's trajectory: `markers` records), held until the next record |
 | `ego/speed_mps`, `ego/control` | speed, and throttle / steer / brake (`Scalars`) |
-| `world/traffic_lights` | the light heads as boxes, coloured by their state over time |
+| `world/traffic_lights` | the light heads, as wireframe boxes |
+| `world/traffic_lights/bulbs` | three bulbs per head, red / yellow / green top to bottom: the one the light's state names lit, the others dim |
+| `world/traffic_lights/tags` | each light's Lanelet2 id and state (`1234 Red`; `carla 77 Red` for a light the map has no element for), written above it in the light's colour |
 | `world/traffic_lights/stops`, `world/traffic_lights/states` | stop-line waypoints; state changes (`TextLog`) |
 | `conditions/<pass\|fail>/<index>` | 1 while the condition is satisfied, on every tick from its first check |
+| `scenario/progress` | the run in the state timeline view (`StateChange`): `running` from the first tick, then `PASSED` / `FAILED` at the last |
+| `scenario/actions/<label>` | each action's lifecycle (`action` records): standby, start, running, end, complete -- OpenSCENARIO's states, the start and end held for the tick they happen on; the lane named by its label (two actions with one label get `_<phase>_<index>`, and a name still taken `_2`, `_3`, ...) |
+| `scenario/conditions/<pass\|fail>/<label>` | each condition `satisfied` / `not satisfied`, its lane named by its label (`pass/reached_goal`; what a path would have to escape becomes `_`, two conditions with one label get `_<index>`, and a name still taken `_2`, `_3`, ...); a pass condition satisfied is green, a fail condition red |
+| `scenario/traffic_lights/<name>` | each light's state (`Red`, `Yellow`, `Green`, ...) over time, the lane named as the tag (`1234`, `carla_77`) |
 | `result`, `result/log`, `result/passed` | the verdict (the `result` record, or `_result.json` for a version-1 log) |
 | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
 | `diagnostics/...` | what the conversion skipped or could not find |
 
+### The layout
+
+A recording carries its blueprint, active when it opens, with three views:
+
+- **Ego** (3D, the top three fifths): the scene from behind the ego,
+  following it -- the view's origin is `world/ego/pose`, the eye 14 m behind
+  and 6 m above it (still free to orbit);
+- **Conditions** (state timeline): `scenario/conditions/**` -- which
+  condition held when;
+- **Actions** (state timeline): `scenario/actions/**` -- when each action
+  was triggered, ran and finished.
+
+Everything else -- speed, control, the verdict, the lights, the logs -- is
+in the recording, to be added from the blueprint panel, which starts open
+(the selection and time panels start collapsed, the time panel on
+`sim_time`). Without an ego, the 3D view shows the world from above.
+
 ### The map
+
+A light is named by the Lanelet2 traffic-light regulatory element(s) that
+are its, when the map has them: an element (`type=regulatory_element`,
+`subtype=traffic_light`) is a CARLA light's when one of its `refers` lights
+is within 3 m (in plan) of one of the light's heads, or one of its
+`ref_line` stop lines of one of the light's stop waypoints -- of several
+lights, the nearest's. A light with two elements is `1234,1240`; one with
+none keeps CARLA's actor id (`carla 77`), as the log has no other.
 
 The file drawn is `map_path` when given, else the Lanelet2 file the log's
 `map` record (version 2) names when it is on this machine, else
@@ -129,7 +161,11 @@ came from. Both format versions convert:
 
 - **version 1** (ACS 14.x and earlier): `world`, `traffic_light`, `actor`, `tick`;
 - **version 2** (`world.schema_version: 2`): adds `map`, `warmup`,
-  `actor_gone`, `markers`, `condition`, `result`.
+  `actor_gone`, `markers`, `condition`, `action`, `result`. (`action` -- each
+  action's lifecycle -- comes from
+  [ACS#293](https://github.com/autowarefoundation/autoware_carla_scenario/pull/293),
+  merged into the version-2 branch, ACS#287, not yet on master;
+  `schema/SOURCE` names the commit vendored.)
 
 ### Updating the schema
 

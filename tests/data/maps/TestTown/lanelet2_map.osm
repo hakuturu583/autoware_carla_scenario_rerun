@@ -1,5 +1,7 @@
 <?xml version="1.0"?>
-<!-- A two-lanelet fixture map: lane boundaries, a stop line, a curb. -->
+<!-- A two-lanelet fixture map: lane boundaries, a stop line, a curb, a traffic light
+     (element 30: its light at local ~(39..41, 15), 5 m up, where the v2 fixture's light 9
+     is once the fixture's map offset (10, 20) is taken off). -->
 <osm version="0.6" upload="false" generator="lanelet2">
   <node id="1" lat="0" lon="0"/>
   <node id="2" lat="0" lon="0.0009"/>
@@ -7,10 +9,13 @@
   <node id="4" lat="0.00003" lon="0.0009"/>
   <node id="5" lat="0.00006" lon="0"><tag k="ele" v="0.5"/></node>
   <node id="6" lat="0.00006" lon="0.0009"><tag k="ele" v="0.5"/></node>
+  <node id="7" lat="0.0001357" lon="0.00035"><tag k="ele" v="5"/></node>
+  <node id="8" lat="0.0001357" lon="0.00037"><tag k="ele" v="5"/></node>
   <way id="10"><nd ref="1"/><nd ref="2"/><tag k="type" v="curbstone"/><tag k="subtype" v="high"/></way>
   <way id="11"><nd ref="3"/><nd ref="4"/><tag k="type" v="line_thin"/><tag k="subtype" v="dashed"/></way>
   <way id="12"><nd ref="5"/><nd ref="6"/><tag k="type" v="line_thin"/><tag k="subtype" v="solid"/></way>
   <way id="13"><nd ref="4"/><nd ref="6"/><tag k="type" v="stop_line"/></way>
+  <way id="14"><nd ref="7"/><nd ref="8"/><tag k="type" v="traffic_light"/><tag k="subtype" v="red_yellow_green"/><tag k="height" v="1.2"/></way>
   <relation id="20">
     <member type="way" ref="11" role="left"/>
     <member type="way" ref="10" role="right"/>
@@ -20,5 +25,9 @@
     <member type="way" ref="12" role="left"/>
     <member type="way" ref="11" role="right"/>
     <tag k="type" v="lanelet"/><tag k="subtype" v="road"/>
+  </relation>
+  <relation id="30">
+    <member type="way" ref="14" role="refers"/>
+    <tag k="type" v="regulatory_element"/><tag k="subtype" v="traffic_light"/>
   </relation>
 </osm>
