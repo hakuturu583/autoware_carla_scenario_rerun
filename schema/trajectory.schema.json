@@ -229,14 +229,14 @@
     },
     "WarmupRecord": {
       "title": "WarmupRecord",
-      "description": "Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording (and the video rendered from it) starts `ticks` frames earlier.",
+      "description": "Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording starts `ticks` frames earlier.",
       "type": "object",
       "properties": {
         "type": {
           "const": "warmup"
         },
         "ticks": {
-          "description": "How many world ticks the warm-up took, from the CARLA recorder's start to the scenario clock's: the first `ticks` frames of the recording (the video's frames captioned as warm-up).",
+          "description": "How many world ticks the warm-up took, from the CARLA recorder's start to the scenario clock's: the first `ticks` frames of the recording.",
           "type": "integer",
           "minimum": 0
         },
@@ -387,7 +387,7 @@
     },
     "MarkersRecord": {
       "title": "MarkersRecord",
-      "description": "The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. They are what the video draws over the frames of the scenario.",
+      "description": "The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. A viewer of the run draws them beside the path the ego drove.",
       "type": "object",
       "properties": {
         "type": {

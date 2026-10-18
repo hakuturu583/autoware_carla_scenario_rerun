@@ -565,7 +565,7 @@ pub struct MapRecord {
     #[serde(flatten)]
     pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
-///The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. They are what the video draws over the frames of the scenario.
+///The ego's debug markers (`EgoVehicle.debug_markers()`: a driver policy's planned trajectory, say), written after a tick when they changed (version 2): they hold from that tick until the next `markers` record. No polylines: the ego shows none from then on. A viewer of the run draws them beside the path the ego drove.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 pub struct MarkersRecord {
     ///The ego actor they belong to, or null when there was no ego actor on that tick.
@@ -947,7 +947,7 @@ impl ::std::convert::From<(f64, f64, f64, i64)> for VehicleControl {
         Self(value)
     }
 }
-///Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording (and the video rendered from it) starts `ticks` frames earlier.
+///Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording starts `ticks` frames earlier.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 pub struct WarmupRecord {
     ///The CARLA frame the scenario clock started at: the frame of the first tick record, at t = 0.
@@ -955,7 +955,7 @@ pub struct WarmupRecord {
     ///The CARLA frame the recorder started at, or null when the run made no CARLA recording (then `ticks` is 0).
     #[serde(deserialize_with = "::std::option::Option::deserialize")]
     pub start_frame: ::std::option::Option<SafeUInt>,
-    ///How many world ticks the warm-up took, from the CARLA recorder's start to the scenario clock's: the first `ticks` frames of the recording (the video's frames captioned as warm-up).
+    ///How many world ticks the warm-up took, from the CARLA recorder's start to the scenario clock's: the first `ticks` frames of the recording.
     pub ticks: u64,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,

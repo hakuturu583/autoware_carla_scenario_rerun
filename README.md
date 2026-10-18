@@ -162,8 +162,9 @@ came from. Both format versions convert:
 - **version 1** (ACS 14.x and earlier): `world`, `traffic_light`, `actor`, `tick`;
 - **version 2** (`world.schema_version: 2`): adds `map`, `warmup`,
   `actor_gone`, `markers`, `condition`, `action`, `result`. (`action` -- each
-  action's lifecycle -- is not in ACS yet: the vendored schema is ACS's
-  version 2 with it added, see `schema/SOURCE`.)
+  action's lifecycle -- comes from
+  [ACS#293](https://github.com/autowarefoundation/autoware_carla_scenario/pull/293),
+  not merged yet; `schema/SOURCE` names the commit vendored.)
 
 ### Updating the schema
 
