@@ -92,12 +92,12 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `ego/speed_mps`, `ego/control` | speed, and throttle / steer / brake (`Scalars`) |
 | `world/traffic_lights` | the light heads, as wireframe boxes |
 | `world/traffic_lights/bulbs` | three bulbs per head, red / yellow / green top to bottom: the one the light's state names lit, the others dim |
-| `world/traffic_lights/tags` | each light's id and state (`77 Red`), written above it in the light's colour |
+| `world/traffic_lights/tags` | each light's Lanelet2 id and state (`1234 Red`; `carla 77 Red` for a light the map has no element for), written above it in the light's colour |
 | `world/traffic_lights/stops`, `world/traffic_lights/states` | stop-line waypoints; state changes (`TextLog`) |
 | `conditions/<pass\|fail>/<index>` | 1 while the condition is satisfied, on every tick from its first check |
 | `scenario/progress` | the run in the state timeline view (`StateChange`): `running` from the first tick, then `PASSED` / `FAILED` at the last |
 | `scenario/conditions/<pass\|fail>/<label>` | each condition `satisfied` / `not satisfied`, its lane named by its label (`pass/reached_goal`; what a path would have to escape becomes `_`, and two conditions with one label get `_<index>`); a pass condition satisfied is green, a fail condition red |
-| `scenario/traffic_lights/<id>` | each light's state (`Red`, `Yellow`, `Green`, ...) over time |
+| `scenario/traffic_lights/<name>` | each light's state (`Red`, `Yellow`, `Green`, ...) over time, the lane named as the tag (`1234`, `carla_77`) |
 | `result`, `result/log`, `result/passed` | the verdict (the `result` record, or `_result.json` for a version-1 log) |
 | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
 | `diagnostics/...` | what the conversion skipped or could not find |
@@ -118,6 +118,14 @@ in the recording, to be added from the blueprint panel, which starts open
 `sim_time`). Without an ego, the 3D view shows the world from above.
 
 ### The map
+
+A light is named by the Lanelet2 traffic-light regulatory element(s) that
+are its, when the map has them: an element (`type=regulatory_element`,
+`subtype=traffic_light`) is a CARLA light's when one of its `refers` lights
+is within 3 m (in plan) of one of the light's heads, or one of its
+`ref_line` stop lines of one of the light's stop waypoints -- of several
+lights, the nearest's. A light with two elements is `1234,1240`; one with
+none keeps CARLA's actor id (`carla 77`), as the log has no other.
 
 The file drawn is `map_path` when given, else the Lanelet2 file the log's
 `map` record (version 2) names when it is on this machine, else

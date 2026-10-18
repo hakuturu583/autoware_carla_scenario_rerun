@@ -18,7 +18,7 @@
 //! | `ego/speed_mps`, `ego/control` | the ego's speed, and throttle/steer/brake (`Scalars`) |
 //! | `world/traffic_lights` | the light heads, wireframe boxes (static) |
 //! | `world/traffic_lights/bulbs` | three bulbs per head (red, yellow, green), the one the state names lit |
-//! | `world/traffic_lights/tags` | each light's id and state, written above it in the light's colour |
+//! | `world/traffic_lights/tags` | each light's Lanelet2 id (else `carla <id>`) and state, written above it in the light's colour |
 //! | `world/traffic_lights/stops` | their stop-line waypoints (static `Points3D`) |
 //! | `world/traffic_lights/states` | the state changes, `TextLog` |
 //! | `conditions/<role>/<index>` | 1 while a pass/fail condition is satisfied, 0 while not (`condition` records, carried forward) |
@@ -203,7 +203,8 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     if let Some(ego) = ego {
         write_ego(&mut w, ticks, ego)?;
     }
-    write_lights(&mut w, ticks, &lights)?;
+    let names = light_names(&lights, inputs.map.as_ref());
+    write_lights(&mut w, ticks, &lights, &names)?;
     write_markers(&mut w, &markers)?;
     write_conditions(&mut w, ticks, &conditions)?;
     if let Some(result) = result {
@@ -211,7 +212,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     }
     write_progress(&mut w, ticks, result)?;
     write_condition_states(&mut w, &conditions)?;
-    write_light_states(&mut w, ticks)?;
+    write_light_states(&mut w, ticks, &names)?;
     if let Some(map) = &inputs.map {
         write_map(&mut w, map)?;
     }
@@ -583,6 +584,116 @@ fn write_ego(w: &mut Writer, ticks: &Ticks, ego: u32) -> RrResult<()> {
     Ok(())
 }
 
+/// How far a Lanelet2 light or stop line may be from a CARLA light's heads
+/// or stop waypoints (in plan) to be taken for it, metres.
+pub const LIGHT_MATCH_M: f64 = 3.0;
+
+/// Distance in plan from `p` to the polyline `line`.
+fn plan_distance(p: [f64; 3], line: &[[f64; 3]]) -> f64 {
+    let d = |a: [f64; 3], b: [f64; 3]| {
+        let (vx, vy) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = vx * vx + vy * vy;
+        let t = if len2 > 0.0 {
+            (((p[0] - a[0]) * vx + (p[1] - a[1]) * vy) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        (p[0] - a[0] - t * vx).hypot(p[1] - a[1] - t * vy)
+    };
+    match line {
+        [] => f64::INFINITY,
+        [a] => d(*a, *a),
+        _ => line
+            .windows(2)
+            .map(|w| d(w[0], w[1]))
+            .fold(f64::INFINITY, f64::min),
+    }
+}
+
+/// What each CARLA light is called: the ids of the Lanelet2 traffic-light
+/// regulatory elements that are its (`1234` or `1234,1240`), else
+/// `carla <id>`.
+///
+/// An element is a light's when one of its lights is within
+/// [`LIGHT_MATCH_M`] of one of the light's heads, or one of its stop lines of
+/// one of the light's stop waypoints; of several lights, the nearest's.
+fn light_names(
+    lights: &[&g::TrafficLightRecord],
+    map: Option<&MapLayer<'_>>,
+) -> HashMap<u32, String> {
+    let mut ids: HashMap<u32, Vec<i64>> = HashMap::new();
+    if let Some(map) = map {
+        let [ox, oy, oz] = map.offset;
+        let place = |line: &Vec<[f64; 3]>| -> Vec<[f64; 3]> {
+            line.iter()
+                .map(|p| [p[0] - ox, p[1] - oy, p[2] - oz])
+                .collect()
+        };
+        // Each light's id, heads and stop waypoints, in the recording's frame.
+        type Points = Vec<[f64; 3]>;
+        let carla: Vec<(u32, Points, Points)> = lights
+            .iter()
+            .map(|l| {
+                let heads = l
+                    .boxes
+                    .iter()
+                    .map(|b| crate::scene::point([b.0 .0, b.0 .1, b.0 .2]))
+                    .collect();
+                let stops = l
+                    .stops
+                    .iter()
+                    .map(|s| crate::scene::point([s.0 .0, s.0 .1, s.0 .2]))
+                    .collect();
+                (l.id.0, heads, stops)
+            })
+            .collect();
+        for element in &map.geometry.traffic_lights {
+            let bulbs: Vec<Vec<[f64; 3]>> = element.lights.iter().map(place).collect();
+            let stop_lines: Vec<Vec<[f64; 3]>> = element.stop_lines.iter().map(place).collect();
+            let nearest = |points: &[[f64; 3]], lines: &[Vec<[f64; 3]>]| {
+                points
+                    .iter()
+                    .flat_map(|p| lines.iter().map(|l| plan_distance(*p, l)))
+                    .fold(f64::INFINITY, f64::min)
+            };
+            let best = carla
+                .iter()
+                .map(|(id, heads, stops)| {
+                    let d = nearest(heads, &bulbs).min(nearest(stops, &stop_lines));
+                    (d, *id)
+                })
+                .filter(|(d, _)| *d <= LIGHT_MATCH_M)
+                .min_by(|a, b| a.0.total_cmp(&b.0));
+            if let Some((_, id)) = best {
+                ids.entry(id).or_default().push(element.id);
+            }
+        }
+    }
+    lights
+        .iter()
+        .map(|l| {
+            let id = l.id.0;
+            let name = match ids.get(&id) {
+                Some(found) => found
+                    .iter()
+                    .map(|e| e.to_string())
+                    .collect::<Vec<_>>()
+                    .join(","),
+                None => format!("carla {id}"),
+            };
+            (id, name)
+        })
+        .collect()
+}
+
+/// A light's name, for a light the log did not describe too.
+fn light_name(names: &HashMap<u32, String>, id: u32) -> String {
+    names
+        .get(&id)
+        .cloned()
+        .unwrap_or_else(|| format!("carla {id}"))
+}
+
 /// A light head's three bulbs, top to bottom: red, yellow, green; the one
 /// the state names lit, the others dim.
 fn bulb_colors(state: LightState) -> [Color; 3] {
@@ -601,7 +712,12 @@ fn bulb_colors(state: LightState) -> [Color; 3] {
     }
 }
 
-fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]) -> RrResult<()> {
+fn write_lights(
+    w: &mut Writer,
+    ticks: &Ticks,
+    lights: &[&g::TrafficLightRecord],
+    names: &HashMap<u32, String>,
+) -> RrResult<()> {
     if lights.is_empty() {
         return Ok(());
     }
@@ -636,7 +752,7 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
         for s in &light.stops {
             let (x, y, z, _yaw) = s.0;
             stops.push(point32([x, y, z + 0.05]));
-            stop_labels.push(format!("{}", light.id.0));
+            stop_labels.push(names[&light.id.0].clone());
         }
     }
     if !centers.is_empty() {
@@ -683,7 +799,7 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
         while k < ticks.lights.len() && ticks.lights[k].tick == tick {
             let c = ticks.lights[k];
             state.insert(c.id, c.state);
-            changed.push(format!("{}={:?}", c.id, c.state));
+            changed.push(format!("{}={:?}", light_name(names, c.id), c.state));
             k += 1;
         }
         frames.push(ticks.frame[tick as usize]);
@@ -693,7 +809,7 @@ fn write_lights(w: &mut Writer, ticks: &Ticks, lights: &[&g::TrafficLightRecord]
             for _ in 0..*n {
                 colors.extend(bulb_colors(s));
             }
-            labels.push(format!("{id} {s}"));
+            labels.push(format!("{} {s}", names[id]));
             label_colors.push(light_color(s));
         }
         texts.push(changed.join(", "));
@@ -1009,7 +1125,7 @@ fn write_condition_states(
 }
 
 /// Each traffic light's state, from the ticks that change one.
-fn write_light_states(w: &mut Writer, ticks: &Ticks) -> RrResult<()> {
+fn write_light_states(w: &mut Writer, ticks: &Ticks, names: &HashMap<u32, String>) -> RrResult<()> {
     type Lane = (Vec<i64>, Vec<f64>, Vec<String>);
     let mut lanes: BTreeMap<u32, Lane> = BTreeMap::new();
     for c in &ticks.lights {
@@ -1018,7 +1134,7 @@ fn write_light_states(w: &mut Writer, ticks: &Ticks) -> RrResult<()> {
         times.push(ticks.t[c.tick as usize]);
         states.push(c.state.to_string());
     }
-    let names: Vec<(LightState, String)> = [
+    let state_names: Vec<(LightState, String)> = [
         LightState::Red,
         LightState::Yellow,
         LightState::Green,
@@ -1028,7 +1144,7 @@ fn write_light_states(w: &mut Writer, ticks: &Ticks) -> RrResult<()> {
     .into_iter()
     .map(|s| (s, s.to_string()))
     .collect();
-    let styles: Vec<(&str, String, [u8; 3])> = names
+    let styles: Vec<(&str, String, [u8; 3])> = state_names
         .iter()
         .map(|(s, name)| {
             let [r, g_, b, _] = light_color(*s).to_array();
@@ -1038,7 +1154,10 @@ fn write_light_states(w: &mut Writer, ticks: &Ticks) -> RrResult<()> {
     for (id, (frames, times, states)) in lanes {
         write_states(
             w,
-            &format!("scenario/traffic_lights/{id}"),
+            &format!(
+                "scenario/traffic_lights/{}",
+                light_name(names, id).replace([',', ' '], "_")
+            ),
             &styles,
             &frames,
             &times,
@@ -1091,7 +1210,63 @@ fn write_map(w: &mut Writer, map: &MapLayer<'_>) -> RrResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::condition_lane;
+    use super::{condition_lane, light_names, MapLayer};
+    use crate::generated as g;
+    use crate::map::{MapGeometry, TrafficLightElement};
+
+    fn light(id: u32, head: [f64; 3], stop: [f64; 3]) -> g::TrafficLightRecord {
+        serde_json::from_value(serde_json::json!({
+            "type": "traffic_light", "id": id, "opendrive_id": "1", "location": head,
+            "boxes": [[head[0], head[1], head[2], 0.2, 0.2, 0.6, 90.0]],
+            "stops": [[stop[0], stop[1], stop[2], 0.0]],
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn lights_are_named_by_their_lanelet2_elements() {
+        // CARLA's y is flipped in the recording, and the map is placed by
+        // its offset: a map point (x, y) lands at (x - 10, y - 20).
+        let a = light(77, [30.0, 5.0, 5.0], [25.0, 3.0, 0.0]);
+        let b = light(78, [-40.0, 0.0, 5.0], [-35.0, 0.0, 0.0]);
+        let c = light(79, [100.0, 100.0, 5.0], [95.0, 100.0, 0.0]);
+        let element =
+            |id, lights: Vec<Vec<[f64; 3]>>, stops: Vec<Vec<[f64; 3]>>| TrafficLightElement {
+                id,
+                lights,
+                stop_lines: stops,
+            };
+        let geometry = MapGeometry {
+            traffic_lights: vec![
+                // By its light, 0.5 m from 77's head.
+                element(
+                    1001,
+                    vec![vec![[40.5, 14.0, 6.0], [40.5, 16.0, 6.0]]],
+                    vec![],
+                ),
+                // By its stop line, across 77's stop waypoint.
+                element(
+                    1002,
+                    vec![],
+                    vec![vec![[35.0, 15.0, 1.0], [35.0, 19.0, 1.0]]],
+                ),
+                // Nearer 78 than 77.
+                element(1003, vec![vec![[-29.0, 20.0, 6.0]]], vec![]),
+                // Nobody's: 50 m from every light.
+                element(1004, vec![vec![[90.0, 15.0, 6.0]]], vec![]),
+            ],
+            ..MapGeometry::default()
+        };
+        let map = MapLayer {
+            geometry: &geometry,
+            offset: [10.0, 20.0, 1.0],
+        };
+        let names = light_names(&[&a, &b, &c], Some(&map));
+        assert_eq!(names[&77], "1001,1002");
+        assert_eq!(names[&78], "1003");
+        assert_eq!(names[&79], "carla 79");
+        assert_eq!(light_names(&[&a], None)[&77], "carla 77");
+    }
 
     #[test]
     fn condition_lanes_are_named_by_their_labels() {

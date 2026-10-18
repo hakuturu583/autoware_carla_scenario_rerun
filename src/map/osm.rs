@@ -1,9 +1,11 @@
 //! Reading the lines of a Lanelet2 map (`.osm`) with quick-xml.
 //!
-//! Only what the recording draws is kept: the left and right bounds of every
-//! lanelet (each linestring once, in the order lanelets first name them) and
-//! every `stop_line` linestring. Points are in the map frame of the
-//! [`Projection`] they were read with.
+//! Only what the recording uses is kept: the left and right bounds of every
+//! lanelet (each linestring once, in the order lanelets first name them),
+//! every `stop_line` linestring, and every traffic-light regulatory element
+//! (its id, its lights and its stop lines: what names a CARLA light by its
+//! Lanelet2 id). Points are in the map frame of the [`Projection`] they were
+//! read with.
 
 use std::collections::{HashMap, HashSet};
 
@@ -33,11 +35,24 @@ pub struct Boundary {
     pub points: Vec<[f64; 3]>,
 }
 
+/// A traffic-light regulatory element (`type=regulatory_element`,
+/// `subtype=traffic_light`): the id Autoware knows the light by.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TrafficLightElement {
+    pub id: i64,
+    /// Its `refers` linestrings: the lights.
+    pub lights: Vec<Vec<[f64; 3]>>,
+    /// Its `ref_line` linestrings: where to stop.
+    pub stop_lines: Vec<Vec<[f64; 3]>>,
+}
+
 /// The lines of a map, in its map frame.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MapGeometry {
     pub lane_boundaries: Vec<Boundary>,
     pub stop_lines: Vec<Vec<[f64; 3]>>,
+    /// The traffic-light regulatory elements, by id.
+    pub traffic_lights: Vec<TrafficLightElement>,
     /// Nodes in the file.
     pub nodes: usize,
     /// Lanelets in the file.
@@ -60,9 +75,13 @@ struct Way {
 
 #[derive(Default)]
 struct Relation {
-    lanelet: bool,
+    id: i64,
+    ty: String,
+    subtype: String,
     left: Vec<i64>,
     right: Vec<i64>,
+    refers: Vec<i64>,
+    ref_line: Vec<i64>,
 }
 
 enum Open {
@@ -98,7 +117,7 @@ fn close(
             ways.insert(id, w);
         }
         Open::Relation(r) => {
-            if r.lanelet {
+            if r.ty == "lanelet" || (r.ty == "regulatory_element" && r.subtype == "traffic_light") {
                 lanelets.push(r);
             }
         }
@@ -189,7 +208,11 @@ pub fn parse(xml: &[u8], projection: &Projection) -> Result<MapGeometry, String>
                 }
             }
             "relation" => {
-                open = Open::Relation(Relation::default());
+                let id = attr(e, "id").and_then(|v| number(&v)).unwrap_or(0);
+                open = Open::Relation(Relation {
+                    id,
+                    ..Relation::default()
+                });
                 if empty {
                     close(
                         std::mem::replace(&mut open, Open::None),
@@ -222,6 +245,8 @@ pub fn parse(xml: &[u8], projection: &Projection) -> Result<MapGeometry, String>
                         match role.as_str() {
                             "left" => rel.left.push(r),
                             "right" => rel.right.push(r),
+                            "refers" => rel.refers.push(r),
+                            "ref_line" => rel.ref_line.push(r),
                             _ => {}
                         }
                     }
@@ -247,11 +272,11 @@ pub fn parse(xml: &[u8], projection: &Projection) -> Result<MapGeometry, String>
                         "subtype" => w.subtype = v,
                         _ => {}
                     },
-                    Open::Relation(r) => {
-                        if k == "type" && v == "lanelet" {
-                            r.lanelet = true;
-                        }
-                    }
+                    Open::Relation(r) => match k.as_str() {
+                        "type" => r.ty = v,
+                        "subtype" => r.subtype = v,
+                        _ => {}
+                    },
                     Open::None => {}
                 }
             }
@@ -265,6 +290,23 @@ pub fn parse(xml: &[u8], projection: &Projection) -> Result<MapGeometry, String>
             .filter_map(|id| nodes.get(id).copied())
             .collect()
     };
+    let (lanelets, elements): (Vec<Relation>, Vec<Relation>) =
+        lanelets.into_iter().partition(|r| r.ty == "lanelet");
+    let lines = |ids: &[i64]| -> Vec<Vec<[f64; 3]>> {
+        ids.iter()
+            .filter_map(|id| ways.get(id))
+            .map(points)
+            .collect()
+    };
+    let mut traffic_lights: Vec<TrafficLightElement> = elements
+        .iter()
+        .map(|r| TrafficLightElement {
+            id: r.id,
+            lights: lines(&r.refers),
+            stop_lines: lines(&r.ref_line),
+        })
+        .collect();
+    traffic_lights.sort_by_key(|t| t.id);
     let mut seen = HashSet::new();
     let mut lane_boundaries = Vec::new();
     for lanelet in &lanelets {
@@ -291,6 +333,7 @@ pub fn parse(xml: &[u8], projection: &Projection) -> Result<MapGeometry, String>
     Ok(MapGeometry {
         lane_boundaries,
         stop_lines,
+        traffic_lights,
         nodes: count_nodes,
         lanelets: lanelets.len(),
     })
@@ -316,6 +359,11 @@ mod tests {
     <tag k="type" v="lanelet"/><tag k="subtype" v="road"/>
   </relation>
   <relation id="21"><member type="way" ref="10" role="left"/><tag k="type" v="regulatory_element"/></relation>
+  <way id="14"><nd ref="3"/><nd ref="5"/><tag k="type" v="traffic_light"/><tag k="height" v="1.2"/></way>
+  <relation id="30">
+    <member type="way" ref="14" role="refers"/><member type="way" ref="12" role="ref_line"/>
+    <tag k="type" v="regulatory_element"/><tag k="subtype" v="traffic_light"/>
+  </relation>
 </osm>"#;
 
     #[test]
@@ -344,6 +392,26 @@ mod tests {
             (map.stop_lines[0][0][0] - 11.13).abs() < 0.05,
             "{:?}",
             map.stop_lines
+        );
+    }
+
+    #[test]
+    fn reads_traffic_light_elements() {
+        let projection = Projection {
+            projector: Projector::Local,
+            origin: (0.0, 0.0, 0.0),
+        };
+        let map = parse(OSM.as_bytes(), &projection).unwrap();
+        let at = |lat, lon, ele| projection.forward(lat, lon, ele);
+        // The other regulatory element (21) is not a light; no lanelet counts it.
+        assert_eq!(map.lanelets, 1);
+        assert_eq!(
+            map.traffic_lights,
+            vec![TrafficLightElement {
+                id: 30,
+                lights: vec![vec![at(0.00003, 0.0, 0.0), [0.0, 0.0, 0.0]]],
+                stop_lines: vec![vec![at(0.0, 0.0001, 1.5), at(0.00003, 0.0001, 0.0)]],
+            }]
         );
     }
 

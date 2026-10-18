@@ -127,8 +127,9 @@ def test_v1_log(v1_log: Path, tmp_path: Path, read_rrd, rrd_columns) -> None:
     assert colors[0].tolist()[:3] == [red, dim_yellow, dim_green]  # every light red
     assert colors[-1].tolist()[-3:] == [0x460000FF, dim_yellow, green]
     tags = cells(lights, "/world/traffic_lights/tags:Points3D:labels")
-    assert list(tags[0]) == [f"{r['id']} Red" for r in light_records]
-    assert list(tags[-1]) == [f"{r['id']} Green" for r in light_records]
+    # No light of the test map is near these (Town10HD's): named by CARLA's ids.
+    assert list(tags[0]) == [f"carla {r['id']} Red" for r in light_records]
+    assert list(tags[-1]) == [f"carla {r['id']} Green" for r in light_records]
     tag_colors = cells(lights, "/world/traffic_lights/tags:Points3D:colors")
     assert set(tag_colors[0].tolist()) == {red} and set(tag_colors[-1].tolist()) == {green}
 
@@ -136,7 +137,7 @@ def test_v1_log(v1_log: Path, tmp_path: Path, read_rrd, rrd_columns) -> None:
     scenario = read_rrd(out, "/scenario/**")
     lanes = {c.split(":")[0] for c in scenario.columns if c.endswith(":StateChange:state")}
     ids = {r["id"] for r in records if r["type"] == "traffic_light"}
-    assert lanes == {"/scenario/progress"} | {f"/scenario/traffic_lights/{i}" for i in ids}
+    assert lanes == {"/scenario/progress"} | {f"/scenario/traffic_lights/carla_{i}" for i in ids}
     progress = cells(scenario, "/scenario/progress:StateChange:state")
     assert [p[0] for p in progress] == ["running", "failed"]
 
@@ -199,7 +200,10 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     # A condition's lane is named by its label.
     assert states("conditions/pass/reached_goal") == [(100, "not_satisfied"), (130, "satisfied")]
     assert states("conditions/fail/collision") == [(100, "not_satisfied")]
-    assert states("traffic_lights/9") == [(100, "Red"), (125, "Green")]
+    # Light 9 is the map's traffic-light element 30: named by its Lanelet2 id.
+    assert states("traffic_lights/30") == [(100, "Red"), (125, "Green")]
+    tags = read_rrd(out, "/world/traffic_lights/tags")
+    assert [list(t) for t in cells(tags, "/world/traffic_lights/tags:Points3D:labels")] == [["30 Red"], ["30 Green"]]
     style = read_rrd(out, "/scenario/conditions/pass/reached_goal", index=None)
     labels = style["/scenario/conditions/pass/reached_goal:StateConfiguration:labels"][0]
     assert list(labels) == ["satisfied", "not satisfied"]
