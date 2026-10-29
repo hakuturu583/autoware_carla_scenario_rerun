@@ -41,6 +41,8 @@ class Stats(TypedDict):
     actor_rows: int
     traffic_lights: int
     markers: int
+    #: A driver policy's plans (`plan` records).
+    plans: int
     conditions: int
     actions: int
     events: int

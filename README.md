@@ -37,7 +37,7 @@ Both functions release the GIL for all of their work, so a sweep can hand the
 previous case to a worker thread and go on with the next. Type stubs ship in
 the wheel (`_native.pyi`, `py.typed`); `Stats` is a `TypedDict`: `input`,
 `output`, `schema_version`, `bytes`, `lines`, `ticks`, `actors`, `actor_rows`,
-`traffic_lights`, `markers`, `conditions`, `actions`, `events`, `has_result`, `map`, `map_cached`,
+`traffic_lights`, `markers`, `plans`, `conditions`, `actions`, `events`, `has_result`, `map`, `map_cached`,
 `unknown_types` (`{type: lines}`), `unknown_first_lines`, `unknown_fields`
 (`{record.field: lines}`), `unknown_field_first_lines`, `null_numbers`, `warnings`,
 `rrd_bytes`, and the seconds spent parsing, reading the map and writing.
@@ -89,6 +89,10 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `world/ego/pose` | the ego's position and yaw (`Transform3D`), which the 3D view follows |
 | `world/ego/driven_path` | the ego's path, a point every 0.5 m (static) |
 | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (a planner's trajectory: `markers` records), held until the next record |
+| `world/ego/plan/previous` | a driver policy's previous plan (`plan` records), grey, beside the current one: how far each new plan moved from the last |
+| `plan_profile/speed` | the current plan's speed against its time ahead (green) and the previous plan's (grey), `LineStrips2D` |
+| `plan/inference_seconds`, `plan/debug/<name>` | how long the policy took to plan, and each diagnostic it surfaced with its plans (`Scalars`) |
+| `scenario/turn_indicator` | the turn indicators the policy commanded (`off`, `left`, `right`), when a command changes them |
 | `ego/speed_mps`, `ego/control` | speed, and throttle / steer / brake (`Scalars`) |
 | `world/traffic_lights` | the light heads, as wireframe boxes |
 | `world/traffic_lights/bulbs` | three bulbs per head, red / yellow / green top to bottom: the one the light's state names lit, the others dim |
@@ -114,7 +118,12 @@ A recording carries its blueprint, active when it opens, with three views:
 - **Conditions** (state timeline): `scenario/conditions/**` -- which
   condition held when;
 - **Actions** (state timeline): `scenario/actions/**` -- when each action
-  was triggered, ran and finished.
+  was triggered, ran and finished (and, with plans, `scenario/turn_indicator`).
+
+A run with a driver policy's plans (`plan` records) gets a second column, a
+third of the width: **Plan speed** (2D, `plan_profile/speed`: the current
+plan's speed profile over the previous one's) above **Plan** (time series,
+`plan/**`: inference time and diagnostics).
 
 Everything else -- speed, control, the verdict, the lights, the logs -- is
 in the recording, to be added from the blueprint panel, which starts open
@@ -167,7 +176,8 @@ came from. Both format versions convert:
   [ACS#293](https://github.com/autowarefoundation/autoware_carla_scenario/pull/293),
   merged into the version-2 branch, ACS#287.) Later within version 2:
   `adversity`, `waypoint_arrival`, `collision`, `walker_fallen`, `spawn`,
-  `despawn` (drawn as `scenario/events`). `schema/SOURCE` names the ACS
+  `despawn` (drawn as `scenario/events`), and `plan` (a driver policy's plan,
+  timed: drawn as above). `schema/SOURCE` names the ACS
   commit the vendored schema is from.
 
 ### Updating the schema

@@ -71,6 +71,7 @@ fn stats_dict<'py>(py: Python<'py>, s: &Stats) -> PyResult<Bound<'py, PyDict>> {
     d.set_item("actor_rows", s.actor_rows)?;
     d.set_item("traffic_lights", s.traffic_lights)?;
     d.set_item("markers", s.markers)?;
+    d.set_item("plans", s.plans)?;
     d.set_item("conditions", s.conditions)?;
     d.set_item("actions", s.actions)?;
     d.set_item("events", s.events)?;

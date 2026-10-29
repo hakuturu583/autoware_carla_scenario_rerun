@@ -7,7 +7,14 @@
 //! |---|---|
 //! | `Ego` (3D) | the scene from behind the ego, following it (origin `world/ego/pose`) |
 //! | `Conditions` (state timeline) | `scenario/conditions/**`: when each pass/fail condition held |
-//! | `Actions` (state timeline) | `scenario/actions/**`: when each action started, ran and ended |
+//! | `Actions` (state timeline) | `scenario/actions/**`: when each action started, ran and ended; with plans, `scenario/turn_indicator` too |
+//!
+//! A run with a driver policy's plans (`plan` records) gets a second column:
+//!
+//! | view | what |
+//! |---|---|
+//! | `Plan speed` (2D) | `plan_profile/speed`: the current plan's speed against its time ahead, and the previous plan's |
+//! | `Plan` (time series) | `plan/**`: the policy's inference time and diagnostics |
 //!
 //! The blueprint is written with the blueprint archetypes directly: the Rust
 //! SDK's `Spatial3DView` cannot set the eye.
@@ -18,8 +25,8 @@ use rerun::external::re_sdk_types::blueprint::archetypes::{
     ViewContents, ViewportBlueprint,
 };
 use rerun::external::re_sdk_types::blueprint::components::{
-    ContainerKind, Eye3DKind, Fps, IncludedContent, PanelState, QueryExpression, RootContainer,
-    RowShare, TimelineName, ViewClass,
+    ColumnShare, ContainerKind, Eye3DKind, Fps, IncludedContent, PanelState, QueryExpression,
+    RootContainer, RowShare, TimelineName, ViewClass,
 };
 use rerun::{RecordingStream, RecordingStreamBuilder};
 
@@ -85,29 +92,37 @@ impl Builder {
         Ok(path)
     }
 
-    /// A column of `contents`, sized by `shares`; its id.
-    fn column(&mut self, contents: &[String], shares: &[f32]) -> BpResult<[u8; 16]> {
+    /// A container of `kind` holding `contents`, sized by `shares`; its id
+    /// and its path, by which another container includes it.
+    fn container(
+        &mut self,
+        kind: ContainerKind,
+        contents: &[String],
+        shares: &[f32],
+    ) -> BpResult<([u8; 16], String)> {
         self.next += 1;
         let (bytes, text) = id(self.next);
-        self.bp
-            .log(
-                format!("container/{text}"),
-                &ContainerBlueprint::new(ContainerKind::Vertical)
-                    .with_contents(contents.iter().map(|c| IncludedContent(c.as_str().into())))
-                    .with_row_shares(shares.iter().map(|s| RowShare((*s).into()))),
-            )
-            .map_err(err)?;
-        Ok(bytes)
+        let path = format!("container/{text}");
+        let mut container = ContainerBlueprint::new(kind)
+            .with_contents(contents.iter().map(|c| IncludedContent(c.as_str().into())));
+        container = if kind == ContainerKind::Horizontal {
+            container.with_col_shares(shares.iter().map(|s| ColumnShare((*s).into())))
+        } else {
+            container.with_row_shares(shares.iter().map(|s| RowShare((*s).into())))
+        };
+        self.bp.log(path.as_str(), &container).map_err(err)?;
+        Ok((bytes, path))
     }
 }
 
 /// Sends the layout into `rec`, active at once. `chase`: there is an ego to
-/// follow (`EGO_POSE` is logged).
+/// follow (`EGO_POSE` is logged); `plans`: a driver policy's plans are.
 pub fn send(
     rec: &RecordingStream,
     application_id: &'static str,
     recording_id: &str,
     chase: bool,
+    plans: bool,
 ) -> BpResult<()> {
     let (bp, storage) = RecordingStreamBuilder::new(application_id)
         .recording_id(format!("{recording_id}.blueprint"))
@@ -144,13 +159,31 @@ pub fn send(
         "/scenario/conditions",
         &["$origin/**"],
     )?;
+    let action_contents: &[&str] = if plans {
+        &["$origin/**", "/scenario/turn_indicator"]
+    } else {
+        &["$origin/**"]
+    };
     let actions = b.view(
         "StateTimeline",
         "Actions",
         "/scenario/actions",
-        &["$origin/**"],
+        action_contents,
     )?;
-    let root = b.column(&[scene, conditions, actions], &[3.0, 1.0, 1.0])?;
+    let (column, column_path) = b.container(
+        ContainerKind::Vertical,
+        &[scene, conditions, actions],
+        &[3.0, 1.0, 1.0],
+    )?;
+    let root = if plans {
+        let speed = b.view("2D", "Plan speed", "/plan_profile", &["$origin/**"])?;
+        let series = b.view("TimeSeries", "Plan", "/plan", &["$origin/**"])?;
+        let (_, side) = b.container(ContainerKind::Vertical, &[speed, series], &[1.0, 1.0])?;
+        b.container(ContainerKind::Horizontal, &[column_path, side], &[2.0, 1.0])?
+            .0
+    } else {
+        column
+    };
 
     let bp = &b.bp;
     bp.log(
