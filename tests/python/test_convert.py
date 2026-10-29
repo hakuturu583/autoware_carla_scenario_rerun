@@ -153,7 +153,8 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     assert stats["schema_version"] == 2
     assert stats["ticks"] == 40
     assert stats["actors"] == 3
-    assert stats["markers"] == 2
+    assert stats["markers"] == 5
+    assert stats["plans"] == 4
     assert stats["conditions"] == 3
     assert stats["actions"] == 6
     assert stats["events"] == 7
@@ -177,11 +178,36 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
 
     plan = read_rrd(out, ["/world/ego/plan", "/world/ego/plan/points"])
     strips = plan["/world/ego/plan:LineStrips3D:strips"].tolist()
-    assert len(strips[0]) == 2 and len(strips[1]) == 0  # set at frame 105, cleared at 115
-    assert plan["frame"].tolist() == [105, 115]
+    # Set at frame 105, a plan's each at 110, 112 and 120, cleared at 115.
+    assert [len(s) for s in strips] == [2, 1, 1, 0, 1]
+    assert plan["frame"].tolist() == [105, 110, 112, 115, 120]
     assert np.allclose(strips[0][0][2], [20.0, -3.0, 0.2])
     points = plan["/world/ego/plan/points:Points3D:positions"].tolist()
-    assert len(points[0]) == 2 and len(points[1]) == 0
+    assert [len(p) for p in points] == [2, 4, 4, 0, 4]
+
+    # While a plan is drawn, the markers drawn before it: none first, none
+    # once cleared, and none for the plan after the clearing.
+    previous = read_rrd(out, "/world/ego/plan/previous")
+    assert previous["frame"].tolist() == [105, 110, 112, 115, 120]
+    strips = previous["/world/ego/plan/previous:LineStrips3D:strips"].tolist()
+    assert [len(s) for s in strips] == [0, 2, 1, 0, 0]
+    # At 112, plan 2's line exactly as its markers drew it (y flipped).
+    assert np.allclose(strips[2][0][0], [11.0, 2.0, 0.4])
+    # Speed against time ahead: the plan's, after the plan the step before
+    # it; cleared with the markers at 115.
+    profile = read_rrd(out, "/plan_profile/speed")
+    assert profile["frame"].tolist() == [105, 110, 112, 115, 120]
+    strips = profile["/plan_profile/speed:LineStrips2D:strips"].tolist()
+    assert [len(s) for s in strips] == [1, 2, 2, 0, 2]
+    assert np.allclose(np.stack(strips[0][0]), [[0.15, 10.0], [0.25, 10.0], [0.35, 10.0]], atol=1e-4)
+    assert np.allclose([p[1] for p in strips[2][1]], [5.0] * 3, atol=1e-4)
+    series = read_rrd(out, "/plan/**")
+    inference = [c[0] for c in cells(series, "/plan/inference_seconds:Scalars:scalars")]
+    assert np.allclose(inference, [0.01, 0.02, 0.03, 0.04])
+    target = [c[0] for c in cells(series, "/plan/debug/speed_target:Scalars:scalars")]
+    assert target == [10.0, 10.0, 5.0, 5.0]
+    nan = [c[0] for c in cells(series, "/plan/debug/nan:Scalars:scalars")]
+    assert len(nan) == 1 and math.isnan(nan[0])
 
     cond = read_rrd(out, "/conditions/pass/0")
     values = [c[0] for c in cond["/conditions/pass/0:Scalars:scalars"]]
@@ -212,6 +238,8 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
         (115, "endTransition"), (116, "completeState"),
     ]
     assert states("actions/lead_speed") == [(100, "runningState")]
+    # The turn indicators change with a command, not with every plan.
+    assert states("turn_indicator") == [(105, "left"), (120, "off")]
     style = read_rrd(out, "/scenario/actions/cut_in", index=None)
     assert list(style["/scenario/actions/cut_in:StateConfiguration:labels"][0]) == [
         "standby", "start", "running", "end", "complete",
@@ -264,7 +292,7 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
 def test_simd_json_gives_the_same_recording(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     a = acsr.convert(v2_log, tmp_path / "a.rrd", parser="serde_json")
     b = acsr.convert(v2_log, tmp_path / "b.rrd", parser="simd_json")
-    for key in ("ticks", "actors", "actor_rows", "markers", "conditions", "actions", "events", "lines"):
+    for key in ("ticks", "actors", "actor_rows", "markers", "plans", "conditions", "actions", "events", "lines"):
         assert a[key] == b[key]
     da = read_rrd(tmp_path / "a.rrd", "/world/**")
     db = read_rrd(tmp_path / "b.rrd", "/world/**")
@@ -448,8 +476,9 @@ def test_rerun_verifies_the_recordings(v1_log: Path, v2_log: Path, tmp_path: Pat
 
 def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None:
     """The blueprint is in the file, active: a chase view on the ego and the
-    state timelines of the conditions and the actions; the rest is left to
-    the blueprint panel."""
+    state timelines of the conditions and the actions, and -- the log has
+    plans -- the plan's speed and its series; the rest is left to the
+    blueprint panel."""
     import subprocess
     import sys
 
@@ -462,7 +491,7 @@ def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None
     assert done.returncode == 0, done.stderr
     text = done.stdout
     assert f'StoreId(Blueprint, "autoware_carla_scenario", "{v2_log.name.split(".")[0]}.blueprint"), make_active: true' in text
-    assert text.count("ViewBlueprint:class_identifier") == 3
+    assert text.count("ViewBlueprint:class_identifier") == 5
     for expected in ("/world/ego/pose@Transform3D", "EyeControls3D:position", "EyeControls3D:look_target"):
         assert expected in text, expected
 

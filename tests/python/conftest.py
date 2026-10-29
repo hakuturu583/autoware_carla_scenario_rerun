@@ -89,6 +89,23 @@ def v2_records(map_path: Path = TEST_MAP, ticks: int = 40) -> list[dict[str, Any
             ]})
         if i == 15:
             records.append({"type": "markers", "frame": frame, "t": t, "actor": 1, "polylines": []})
+        # A driver policy's plans: straight on at 10 m/s, then braking, its
+        # turn indicator commanded left, left again, nothing, then off.
+        plan = {5: (1, 2, 10.0), 10: (2, 2, 10.0), 12: (3, 0, 5.0), 20: (4, 1, 5.0)}.get(i)
+        if plan:
+            step, indicator, speed = plan
+            if i != 5:  # tick 5's markers are above; each plan's come right before it
+                records.append({"type": "markers", "frame": frame, "t": t, "actor": 1, "polylines": [
+                    {"points": [[i + speed * 0.1 * k, -2.0, 0.4] for k in range(1, 5)], "color": [0, 255, 0],
+                     "thickness": 0.1, "point_size": 0.1},
+                ]})
+            records.append({
+                "type": "plan", "frame": frame, "t": t, "actor": 1, "step": step,
+                "planned_at_us": 3_000_000 + i * 50_000, "policy": "fake", "inference_seconds": 0.01 * step,
+                "turn_indicator": indicator,
+                "debug_scalars": {"speed target": speed, "nan": None} if step == 4 else {"speed target": speed},
+                "points": [[0.1 * k, i + speed * 0.1 * k, 2.0, 0.1, 10.0] for k in range(1, 5)],
+            })
         if i == 0:
             records.append({"type": "condition", "frame": frame, "t": t, "role": "pass", "index": 0,
                             "label": "reached_goal", "satisfied": False})

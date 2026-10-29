@@ -959,6 +959,59 @@ pub struct MarkersRecord {
     #[serde(flatten)]
     pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
+///`[dt, x, y, z, yaw]`: seconds after the plan was made, CARLA world position (m), CARLA yaw (degrees).
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(transparent)]
+pub struct PlanPoint(pub (f64, f64, f64, f64, f64));
+impl ::std::ops::Deref for PlanPoint {
+    type Target = (f64, f64, f64, f64, f64);
+    fn deref(&self) -> &(f64, f64, f64, f64, f64) {
+        &self.0
+    }
+}
+impl ::std::convert::From<PlanPoint> for (f64, f64, f64, f64, f64) {
+    fn from(value: PlanPoint) -> Self {
+        value.0
+    }
+}
+impl ::std::convert::From<(f64, f64, f64, f64, f64)> for PlanPoint {
+    fn from(value: (f64, f64, f64, f64, f64)) -> Self {
+        Self(value)
+    }
+}
+///A driver's plan, timed (a driver policy's, or an Autoware ego's trajectory command) (`autoware_carla_scenario.ego_plan.EgoPlan`), written right after the `markers` record that draws it (version 2, added after the records listed in `schema_version`): once per plan, holding until the next `plan` record. Where the `markers` record draws the plan, this one keeps what reading how it behaves needs -- when each point is planned for, its heading, and what the policy said with it.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct PlanRecord {
+    ///The ego actor it belongs to, or null when there was no ego actor on that tick.
+    #[serde(deserialize_with = "::std::option::Option::deserialize")]
+    pub actor: ::std::option::Option<ActorId>,
+    ///The diagnostics the policy surfaced with the plan, by name; null for a value JSON has no number for (NaN, infinity).
+    pub debug_scalars: ::std::collections::HashMap<
+        ::std::string::String,
+        ::std::option::Option<f64>,
+    >,
+    ///The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).
+    pub frame: SafeUInt,
+    ///How long the policy took to plan, when it said; 0 otherwise (an Autoware ego), null for a value JSON has no number for.
+    #[serde(deserialize_with = "::std::option::Option::deserialize")]
+    pub inference_seconds: ::std::option::Option<f64>,
+    ///When the plan was made, on the driver's clock: a driver policy's, microseconds since its session began; an Autoware ego's, its trajectory command's stamp. Two plans of one run are `planned_at_us` apart; the clock is not the scenario's `t`.
+    pub planned_at_us: SafeUInt,
+    ///The planned poses of the rig's origin, in order: `[dt, x, y, z, yaw]`, `dt` seconds after the plan was made (negative for a point before it), the position in CARLA's world frame (m) and the yaw in CARLA's (degrees). A point the driver gave a coordinate that is not a finite number is left out.
+    pub points: ::std::vec::Vec<PlanPoint>,
+    ///The policy's name, when its answer said; empty otherwise.
+    pub policy: ::std::string::String,
+    ///Which plan of the driver's session it is, from 1 (a driver policy's answer, or an Autoware ego's trajectory command).
+    pub step: ::std::num::NonZeroU64,
+    ///That tick's simulated time, seconds since the scenario clock started. The plan was made on that tick, except one made before the first recorded tick (while the run waits for the ego to be ready), which is written on it: `planned_at_us` tells when.
+    pub t: f64,
+    ///The turn indicators the policy commanded with the plan, numbered as Autoware's TurnIndicatorsCommand: 0 no command, 1 off, 2 left, 3 right.
+    pub turn_indicator: u64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
 ///A line through `points`, in CARLA's world frame (`DebugPolyline`).
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 pub struct Polyline {
@@ -1189,7 +1242,7 @@ impl ::std::convert::TryFrom<::std::string::String> for TrafficLightState {
         value.parse()
     }
 }
-///One line of a run's `{stem}.trajectory.jsonl`, written by `autoware_carla_scenario.trajectory_recorder.TrajectoryRecorder`, format version 2: one of seventeen records, told apart by `type`. Units, frames and the order of a file: docs/trajectory_log.md.
+///One line of a run's `{stem}.trajectory.jsonl`, written by `autoware_carla_scenario.trajectory_recorder.TrajectoryRecorder`, format version 2: one of eighteen records, told apart by `type`. Units, frames and the order of a file: docs/trajectory_log.md.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum TrajectoryRecord {
@@ -1201,6 +1254,7 @@ pub enum TrajectoryRecord {
     ActorGoneRecord(ActorGoneRecord),
     TickRecord(TickRecord),
     MarkersRecord(MarkersRecord),
+    PlanRecord(PlanRecord),
     ConditionRecord(ConditionRecord),
     ActionRecord(ActionRecord),
     AdversityRecord(AdversityRecord),
@@ -1249,6 +1303,11 @@ impl ::std::convert::From<TickRecord> for TrajectoryRecord {
 impl ::std::convert::From<MarkersRecord> for TrajectoryRecord {
     fn from(value: MarkersRecord) -> Self {
         Self::MarkersRecord(value)
+    }
+}
+impl ::std::convert::From<PlanRecord> for TrajectoryRecord {
+    fn from(value: PlanRecord) -> Self {
+        Self::PlanRecord(value)
     }
 }
 impl ::std::convert::From<ConditionRecord> for TrajectoryRecord {
@@ -1613,6 +1672,7 @@ pub const RECORD_TYPES: &[(&str, &str)] = &[
     ("actor_gone", "ActorGoneRecord"),
     ("tick", "TickRecord"),
     ("markers", "MarkersRecord"),
+    ("plan", "PlanRecord"),
     ("condition", "ConditionRecord"),
     ("action", "ActionRecord"),
     ("adversity", "AdversityRecord"),
@@ -1722,6 +1782,13 @@ impl UnknownFields for MarkersRecord {
             out(format!("{path}.{key}"));
         }
         self.polylines.unknown_fields(&format!("{path}.polylines"), out);
+    }
+}
+impl UnknownFields for PlanRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
     }
 }
 impl UnknownFields for Polyline {

@@ -15,6 +15,10 @@
 //! | `world/ego/pose` | the ego's position and yaw (`Transform3D`): the chase view follows it |
 //! | `world/ego/driven_path` | the ego's path (static `LineStrips3D`, a point every 0.5 m) |
 //! | `world/ego/plan`, `world/ego/plan/points` | the ego's debug markers (`markers` records), held until the next |
+//! | `world/ego/plan/previous` | while a plan is drawn, the one drawn before it (the previous `markers` record), grey: how far the new plan moved |
+//! | `plan_profile/speed` | the current plan's speed against its time ahead (green), and the previous plan's (grey) when it is the step before, `LineStrips2D`; cleared with the markers |
+//! | `plan/inference_seconds`, `plan/debug/<name>` | how long the policy took, and the diagnostics it surfaced, per plan (`Scalars`) |
+//! | `scenario/turn_indicator` | the turn indicators the policy commanded (`StateChange`; a plan with no command leaves them) |
 //! | `ego/speed_mps`, `ego/control` | the ego's speed, and throttle/steer/brake (`Scalars`) |
 //! | `world/traffic_lights` | the light heads, wireframe boxes (static) |
 //! | `world/traffic_lights/bulbs` | three bulbs per head (red, yellow, green), the one the state names lit |
@@ -35,7 +39,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::path::Path;
 
 use rerun::{
-    Arrows3D, Boxes3D, Color, LineStrips3D, Points3D, Quaternion, RecordingStream,
+    Arrows3D, Boxes3D, Color, LineStrips2D, LineStrips3D, Points3D, Quaternion, RecordingStream,
     RecordingStreamBuilder, Scalars, SeriesLines, StateChange, StateConfiguration, TextDocument,
     TextLog, TimeColumn, Transform3D, ViewCoordinates,
 };
@@ -68,6 +72,11 @@ const FAILED_COLOR: [u8; 3] = [230, 50, 50];
 const START_COLOR: [u8; 3] = [255, 200, 0];
 const END_COLOR: [u8; 3] = [255, 140, 0];
 const UNSATISFIED_COLOR: [u8; 3] = [90, 90, 90];
+/// A plan, as ACS draws its markers (`TRAJECTORY_COLOR`), and the one before it.
+const PLAN_COLOR: [u8; 3] = [0, 255, 0];
+const PREVIOUS_PLAN_COLOR: [u8; 3] = [160, 160, 160];
+const TURN_LEFT_COLOR: [u8; 3] = [255, 170, 0];
+const TURN_RIGHT_COLOR: [u8; 3] = [0, 170, 255];
 
 fn rgb(c: [u8; 3]) -> Color {
     Color::from_rgb(c[0], c[1], c[2])
@@ -167,6 +176,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     let mut actors: HashMap<u32, &g::ActorRecord> = HashMap::new();
     let mut lights: Vec<&g::TrafficLightRecord> = Vec::new();
     let mut markers: Vec<&g::MarkersRecord> = Vec::new();
+    let mut plans: Vec<&g::PlanRecord> = Vec::new();
     let mut gone: Vec<&g::ActorGoneRecord> = Vec::new();
     let mut conditions: BTreeMap<(String, u64), Vec<&g::ConditionRecord>> = BTreeMap::new();
     let mut actions: BTreeMap<(String, u64), Vec<&g::ActionRecord>> = BTreeMap::new();
@@ -186,6 +196,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
             }
             Record::ActorGone(r) => gone.push(r),
             Record::Markers(r) => markers.push(r),
+            Record::Plan(r) => plans.push(r),
             Record::Condition(r) => {
                 let role = match r.role {
                     g::ConditionRecordRole::Pass => "pass",
@@ -216,7 +227,13 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     write_info(&mut w, parsed, world, map_record, warmup)?;
     let ticks = &parsed.ticks;
     let ego = ego_id(parsed, &actors);
-    crate::layout::send(&w.rec, APPLICATION_ID, inputs.recording_id, ego.is_some())?;
+    crate::layout::send(
+        &w.rec,
+        APPLICATION_ID,
+        inputs.recording_id,
+        ego.is_some(),
+        !plans.is_empty(),
+    )?;
     write_actors(&mut w, ticks, &actors, &gone)?;
     if let Some(ego) = ego {
         write_ego(&mut w, ticks, ego)?;
@@ -224,6 +241,12 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     let names = light_names(&lights, inputs.map.as_ref());
     write_lights(&mut w, ticks, &lights, &names)?;
     write_markers(&mut w, &markers)?;
+    let cleared: Vec<&g::MarkersRecord> = markers
+        .iter()
+        .copied()
+        .filter(|m| m.polylines.is_empty())
+        .collect();
+    write_plans(&mut w, &plans, &cleared)?;
     write_conditions(&mut w, ticks, &conditions)?;
     if let Some(result) = result {
         write_result(&mut w, ticks, result)?;
@@ -903,7 +926,33 @@ fn write_markers(w: &mut Writer, markers: &[&g::MarkersRecord]) -> RrResult<()> 
         .with_radii(point_radii)
         .columns(point_lengths)
         .map_err(err)?;
-    w.columns("world/ego/plan/points", &frames, &times, columns)
+    w.columns("world/ego/plan/points", &frames, &times, columns)?;
+
+    // While a plan is drawn, the one drawn before it, grey: stepping through
+    // the run shows how far each new plan moved from the last.
+    let (mut strips, mut lengths) = (Vec::new(), Vec::new());
+    for (i, m) in markers.iter().enumerate() {
+        let before: &[g::Polyline] = match i {
+            0 => &[],
+            _ if m.polylines.is_empty() => &[],
+            _ => &markers[i - 1].polylines,
+        };
+        lengths.push(before.len());
+        strips.extend(before.iter().map(|line| {
+            line.points
+                .iter()
+                .map(|p| point32(p.0.into()))
+                .collect::<Vec<_>>()
+        }));
+    }
+    let n = strips.len();
+    let columns = LineStrips3D::update_fields()
+        .with_strips(strips)
+        .with_colors(std::iter::repeat_n(rgb(PREVIOUS_PLAN_COLOR), n))
+        .with_radii(std::iter::repeat_n(0.04f32, n))
+        .columns(lengths)
+        .map_err(err)?;
+    w.columns("world/ego/plan/previous", &frames, &times, columns)
 }
 
 /// A scenario event, as `scenario/events` logs it.
@@ -1038,6 +1087,165 @@ fn write_events(w: &mut Writer, mut events: Vec<Event>) -> RrResult<()> {
         .columns_of_unit_batches()
         .map_err(err)?;
     w.columns("scenario/events", &frames, &times, columns)
+}
+
+/// A speed profile: `(dt, m/s)` points.
+type Profile = Vec<[f32; 2]>;
+
+/// One row of `plan_profile/speed`: the profiles drawn from `frame` on.
+struct ProfileRow<'a> {
+    frame: i64,
+    t: f64,
+    lines: Vec<(&'a Profile, [u8; 3])>,
+}
+
+/// A plan's speed against its time ahead: `(dt, m/s)` between each two
+/// points, at their middle; nothing between two points planned for one time.
+fn speed_profile(plan: &g::PlanRecord) -> Profile {
+    plan.points
+        .windows(2)
+        .filter_map(|pair| {
+            let (ta, xa, ya, za, _) = pair[0].0;
+            let (tb, xb, yb, zb, _) = pair[1].0;
+            let dt = tb - ta;
+            (dt > 1e-6).then(|| {
+                let d = ((xb - xa).powi(2) + (yb - ya).powi(2) + (zb - za).powi(2)).sqrt();
+                [((ta + tb) / 2.0) as f32, (d / dt) as f32]
+            })
+        })
+        .collect()
+}
+
+/// A series of scalars: the frames and times of its values.
+#[derive(Default)]
+struct Series {
+    frames: Vec<i64>,
+    times: Vec<f64>,
+    values: Vec<f64>,
+}
+
+/// The `plan` records: the speed profiles (cleared with the markers,
+/// `cleared`), the policy's timings and diagnostics, and its turn indicator
+/// commands.
+fn write_plans(
+    w: &mut Writer,
+    plans: &[&g::PlanRecord],
+    cleared: &[&g::MarkersRecord],
+) -> RrResult<()> {
+    if plans.is_empty() {
+        return Ok(());
+    }
+    let frames: Vec<i64> = plans.iter().map(|p| p.frame.0).collect();
+    let times: Vec<f64> = plans.iter().map(|p| p.t).collect();
+
+    // Each plan's speed over the one before it, when that is the plan just
+    // before it in the same session; markers cleared without a plan clear it.
+    let profiles: Vec<Profile> = plans.iter().map(|p| speed_profile(p)).collect();
+    let mut rows: Vec<ProfileRow> = Vec::new();
+    for (i, p) in plans.iter().enumerate() {
+        let mut lines = Vec::new();
+        if i > 0 && plans[i - 1].step.get() + 1 == p.step.get() {
+            lines.push((&profiles[i - 1], PREVIOUS_PLAN_COLOR));
+        }
+        lines.push((&profiles[i], PLAN_COLOR));
+        rows.push(ProfileRow {
+            frame: p.frame.0,
+            t: p.t,
+            lines,
+        });
+    }
+    for m in cleared {
+        if !frames.contains(&m.frame.0) {
+            rows.push(ProfileRow {
+                frame: m.frame.0,
+                t: m.t,
+                lines: Vec::new(),
+            });
+        }
+    }
+    rows.sort_by_key(|r| r.frame);
+    let row_frames: Vec<i64> = rows.iter().map(|r| r.frame).collect();
+    let row_times: Vec<f64> = rows.iter().map(|r| r.t).collect();
+    let lengths: Vec<usize> = rows.iter().map(|r| r.lines.len()).collect();
+    let (strips, colors): (Vec<Profile>, Vec<Color>) = rows
+        .iter()
+        .flat_map(|r| &r.lines)
+        .map(|(strip, color)| ((*strip).clone(), rgb(*color)))
+        .unzip();
+    let columns = LineStrips2D::update_fields()
+        .with_strips(strips)
+        .with_colors(colors)
+        .columns(lengths)
+        .map_err(err)?;
+    w.columns("plan_profile/speed", &row_frames, &row_times, columns)?;
+
+    w.fixed(
+        "plan/inference_seconds",
+        &SeriesLines::new().with_names(["inference seconds"]),
+    )?;
+    let columns = Scalars::new(
+        plans
+            .iter()
+            .map(|p| p.inference_seconds.unwrap_or(f64::NAN)),
+    )
+    .columns_of_unit_batches()
+    .map_err(err)?;
+    w.columns("plan/inference_seconds", &frames, &times, columns)?;
+
+    // One series per diagnostic, over the plans that surfaced it.
+    let mut debug: BTreeMap<&str, Series> = BTreeMap::new();
+    for p in plans {
+        for (name, value) in &p.debug_scalars {
+            let series = debug.entry(name.as_str()).or_default();
+            series.frames.push(p.frame.0);
+            series.times.push(p.t);
+            series.values.push(value.unwrap_or(f64::NAN));
+        }
+    }
+    let lanes = lane_names(
+        debug
+            .keys()
+            .map(|name| (String::new(), *name, "_".to_string()))
+            .collect(),
+    );
+    for ((name, series), lane) in debug.iter().zip(&lanes) {
+        let path = format!("plan/debug/{lane}");
+        w.fixed(&path, &SeriesLines::new().with_names([*name]))?;
+        let columns = Scalars::new(series.values.iter().copied())
+            .columns_of_unit_batches()
+            .map_err(err)?;
+        w.columns(&path, &series.frames, &series.times, columns)?;
+    }
+
+    // The indicators change only when a command does; 0 commands nothing.
+    let (mut frames, mut times, mut states) = (Vec::new(), Vec::new(), Vec::new());
+    for p in plans {
+        let state = match p.turn_indicator {
+            0 => continue,
+            1 => "off",
+            2 => "left",
+            3 => "right",
+            _ => "unknown",
+        };
+        if states.last().map(String::as_str) != Some(state) {
+            frames.push(p.frame.0);
+            times.push(p.t);
+            states.push(state.to_string());
+        }
+    }
+    write_states(
+        w,
+        "scenario/turn_indicator",
+        &[
+            ("off", "off".into(), UNSATISFIED_COLOR),
+            ("left", "left".into(), TURN_LEFT_COLOR),
+            ("right", "right".into(), TURN_RIGHT_COLOR),
+            ("unknown", "unknown".into(), FAILED_COLOR),
+        ],
+        &frames,
+        &times,
+        states,
+    )
 }
 
 fn write_conditions(
