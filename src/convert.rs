@@ -113,6 +113,9 @@ pub struct Stats {
     pub markers: u64,
     pub conditions: u64,
     pub actions: u64,
+    /// Scenario events: `adversity`, `waypoint_arrival`, `collision`,
+    /// `walker_fallen`, `spawn` and `despawn` records.
+    pub events: u64,
     pub has_result: bool,
     /// The Lanelet2 map drawn, if any.
     pub map: Option<PathBuf>,
@@ -462,6 +465,12 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
             Record::Markers(_) => stats.markers += 1,
             Record::Condition(_) => stats.conditions += 1,
             Record::Action(_) => stats.actions += 1,
+            Record::Adversity(_)
+            | Record::WaypointArrival(_)
+            | Record::Collision(_)
+            | Record::WalkerFallen(_)
+            | Record::Spawn(_)
+            | Record::Despawn(_) => stats.events += 1,
             Record::Result(_) => stats.has_result = true,
             _ => {}
         }

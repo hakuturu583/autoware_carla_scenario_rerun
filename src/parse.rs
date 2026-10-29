@@ -43,6 +43,12 @@ pub const HANDLED_TYPES: &[&str] = &[
     "markers",
     "condition",
     "action",
+    "adversity",
+    "waypoint_arrival",
+    "collision",
+    "walker_fallen",
+    "spawn",
+    "despawn",
     "result",
 ];
 
@@ -182,6 +188,12 @@ pub enum Record {
     Markers(g::MarkersRecord),
     Condition(g::ConditionRecord),
     Action(g::ActionRecord),
+    Adversity(g::AdversityRecord),
+    WaypointArrival(g::WaypointArrivalRecord),
+    Collision(g::CollisionRecord),
+    WalkerFallen(g::WalkerFallenRecord),
+    Spawn(g::SpawnRecord),
+    Despawn(g::DespawnRecord),
     Result(g::ResultRecord),
 }
 
@@ -447,6 +459,12 @@ impl Record {
             Record::Markers(r) => r.unknown_fields("markers", out),
             Record::Condition(r) => r.unknown_fields("condition", out),
             Record::Action(r) => r.unknown_fields("action", out),
+            Record::Adversity(r) => r.unknown_fields("adversity", out),
+            Record::WaypointArrival(r) => r.unknown_fields("waypoint_arrival", out),
+            Record::Collision(r) => r.unknown_fields("collision", out),
+            Record::WalkerFallen(r) => r.unknown_fields("walker_fallen", out),
+            Record::Spawn(r) => r.unknown_fields("spawn", out),
+            Record::Despawn(r) => r.unknown_fields("despawn", out),
             Record::Result(r) => r.unknown_fields("result", out),
         }
     }
@@ -520,6 +538,14 @@ fn parse_chunk(chunk: &[u8], options: &ParseOptions) -> Result<ChunkOut, LineErr
             b"markers" => Some(record(parser, line, &mut scratch).map(Record::Markers)),
             b"condition" => Some(record(parser, line, &mut scratch).map(Record::Condition)),
             b"action" => Some(record(parser, line, &mut scratch).map(Record::Action)),
+            b"adversity" => Some(record(parser, line, &mut scratch).map(Record::Adversity)),
+            b"waypoint_arrival" => {
+                Some(record(parser, line, &mut scratch).map(Record::WaypointArrival))
+            }
+            b"collision" => Some(record(parser, line, &mut scratch).map(Record::Collision)),
+            b"walker_fallen" => Some(record(parser, line, &mut scratch).map(Record::WalkerFallen)),
+            b"spawn" => Some(record(parser, line, &mut scratch).map(Record::Spawn)),
+            b"despawn" => Some(record(parser, line, &mut scratch).map(Record::Despawn)),
             b"result" => Some(record(parser, line, &mut scratch).map(Record::Result)),
             other => {
                 // Skipped, but only if it is JSON: a broken line is an error

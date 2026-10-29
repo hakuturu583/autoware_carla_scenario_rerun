@@ -37,7 +37,7 @@ Both functions release the GIL for all of their work, so a sweep can hand the
 previous case to a worker thread and go on with the next. Type stubs ship in
 the wheel (`_native.pyi`, `py.typed`); `Stats` is a `TypedDict`: `input`,
 `output`, `schema_version`, `bytes`, `lines`, `ticks`, `actors`, `actor_rows`,
-`traffic_lights`, `markers`, `conditions`, `actions`, `has_result`, `map`, `map_cached`,
+`traffic_lights`, `markers`, `conditions`, `actions`, `events`, `has_result`, `map`, `map_cached`,
 `unknown_types` (`{type: lines}`), `unknown_first_lines`, `unknown_fields`
 (`{record.field: lines}`), `unknown_field_first_lines`, `null_numbers`, `warnings`,
 `rrd_bytes`, and the seconds spent parsing, reading the map and writing.
@@ -99,6 +99,7 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `scenario/actions/<label>` | each action's lifecycle (`action` records): standby, start, running, end, complete -- OpenSCENARIO's states, the start and end held for the tick they happen on; the lane named by its label (two actions with one label get `_<phase>_<index>`, and a name still taken `_2`, `_3`, ...) |
 | `scenario/conditions/<pass\|fail>/<label>` | each condition `satisfied` / `not satisfied`, its lane named by its label (`pass/reached_goal`; what a path would have to escape becomes `_`, two conditions with one label get `_<index>`, and a name still taken `_2`, `_3`, ...); a pass condition satisfied is green, a fail condition red |
 | `scenario/traffic_lights/<name>` | each light's state (`Red`, `Yellow`, `Green`, ...) over time, the lane named as the tag (`1234`, `carla_77`) |
+| `scenario/events` | what else happened, in order (`TextLog`): an adversity NADE sampled, a routed entity reaching a timed waypoint (and how late), a collision between road users other than the ego, a walker fallen (WARN, as a collision), an entity spawned or despawned |
 | `result`, `result/log`, `result/passed` | the verdict (the `result` record, or `_result.json` for a version-1 log) |
 | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
 | `diagnostics/...` | what the conversion skipped or could not find |
@@ -164,8 +165,10 @@ came from. Both format versions convert:
   `actor_gone`, `markers`, `condition`, `action`, `result`. (`action` -- each
   action's lifecycle -- comes from
   [ACS#293](https://github.com/autowarefoundation/autoware_carla_scenario/pull/293),
-  merged into the version-2 branch, ACS#287; the vendored schema is ACS
-  master b9601d3d, #287's merge. `schema/SOURCE` names the commit.)
+  merged into the version-2 branch, ACS#287.) Later within version 2:
+  `adversity`, `waypoint_arrival`, `collision`, `walker_fallen`, `spawn`,
+  `despawn` (drawn as `scenario/events`). `schema/SOURCE` names the ACS
+  commit the vendored schema is from.
 
 ### Updating the schema
 

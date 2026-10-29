@@ -156,6 +156,7 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     assert stats["markers"] == 2
     assert stats["conditions"] == 3
     assert stats["actions"] == 6
+    assert stats["events"] == 7
     assert stats["has_result"]
     # The map record names the file, and its offsets place it.
     assert stats["map"] == str(TEST_MAP)
@@ -220,6 +221,21 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     assert list(labels) == ["satisfied", "not satisfied"]
     assert "PASSED" in cells(result, "/result/log:TextLog:text")[0][0]
 
+    # The scenario's events, in order, a collision and a fall as warnings.
+    log = read_rrd(out, "/scenario/events")
+    texts = [c[0] for c in cells(log, "/scenario/events:TextLog:text")]
+    levels = [c[0] for c in cells(log, "/scenario/events:TextLog:level")]
+    assert log["frame"].tolist() == [108, 109, 110, 112, 114, 116, 135]
+    assert texts[0].startswith("nade: adversity cut_in by npc at any")
+    assert texts[1] == "route: npc reached waypoint 1 (time target, driver mode) at 0.45 s, +0.15 s from 0.30 s"
+    assert texts[2] == "appear: spawned pedestrian (3 walker.pedestrian.0001 pedestrian)"
+    assert texts[3] == "collision start: npc (2) and pedestrian (3), impulse 120.0 N*s"
+    assert texts[4] == "collision end: npc (2) and pedestrian (3), impulse 150.0 N*s, lasted 0.10 s"
+    assert texts[5] == "walker 3 pedestrian fell (dropped 0.60 m, tilted 70 deg)"
+    # No label: the run despawned it. The actor named as world/actors labels it.
+    assert texts[6] == "despawned pedestrian (3 walker.pedestrian.0001 pedestrian) (fallen)"
+    assert levels == ["INFO", "INFO", "INFO", "WARN", "WARN", "WARN", "INFO"]
+
     # The ego's pose, which the chase view follows: its position and its yaw.
     pose = read_rrd(out, "/world/ego/pose")
     translations = pose["/world/ego/pose:Transform3D:translation"].tolist()
@@ -248,7 +264,7 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
 def test_simd_json_gives_the_same_recording(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     a = acsr.convert(v2_log, tmp_path / "a.rrd", parser="serde_json")
     b = acsr.convert(v2_log, tmp_path / "b.rrd", parser="simd_json")
-    for key in ("ticks", "actors", "actor_rows", "markers", "conditions", "actions", "lines"):
+    for key in ("ticks", "actors", "actor_rows", "markers", "conditions", "actions", "events", "lines"):
         assert a[key] == b[key]
     da = read_rrd(tmp_path / "a.rrd", "/world/**")
     db = read_rrd(tmp_path / "b.rrd", "/world/**")
