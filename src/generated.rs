@@ -353,6 +353,307 @@ for ActorState {
         Self(value)
     }
 }
+///An adversity NADE sampled on a tick (`AdversarialTrafficAction`, #397): who carries it out, what it is, the probabilities it was sampled with and the run's importance-sampling weight once it was. Written on the tick it was sampled; a run without NADE has none. Added in version 2, which a reader of version 2 that does not know it skips.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct AdversityRecord {
+    ///The role name of who carries it out.
+    pub agent: ::std::string::String,
+    ///Whether its victims could brake out of it.
+    pub avoidable: bool,
+    ///The CARLA frame of the tick it belongs to, as an action record's.
+    pub frame: SafeUInt,
+    ///The importance-sampling probability q it was sampled with.
+    pub is_probability: f64,
+    ///Its kind, an `AdversityKind` value.
+    pub kind: AdversityRecordKind,
+    ///The label of the action that sampled it.
+    pub label: ::std::string::String,
+    ///Where it may fire, an `AdversityLocation` value.
+    pub location: AdversityRecordLocation,
+    ///Its naturalistic probability p a tick, cut for an unavoidable one.
+    pub probability: f64,
+    ///Their response: `avoid`, `accept`, or empty when none is driven (the ego is a victim).
+    pub response: AdversityRecordResponse,
+    ///That tick's simulated time, seconds since the scenario clock started.
+    pub t: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    ///The NPCs that respond to it, by role name.
+    pub victims: ::std::vec::Vec<::std::string::String>,
+    ///The run's importance-sampling weight once it was sampled, its victims' response included.
+    pub weight: f64,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///Its kind, an `AdversityKind` value.
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum AdversityRecordKind {
+    #[serde(rename = "brake_check")]
+    BrakeCheck,
+    #[serde(rename = "ignore_leader")]
+    IgnoreLeader,
+    #[serde(rename = "cut_in")]
+    CutIn,
+    #[serde(rename = "traffic_rule")]
+    TrafficRule,
+    #[serde(rename = "jaywalking")]
+    Jaywalking,
+}
+impl ::std::fmt::Display for AdversityRecordKind {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::BrakeCheck => f.write_str("brake_check"),
+            Self::IgnoreLeader => f.write_str("ignore_leader"),
+            Self::CutIn => f.write_str("cut_in"),
+            Self::TrafficRule => f.write_str("traffic_rule"),
+            Self::Jaywalking => f.write_str("jaywalking"),
+        }
+    }
+}
+impl ::std::str::FromStr for AdversityRecordKind {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "brake_check" => Ok(Self::BrakeCheck),
+            "ignore_leader" => Ok(Self::IgnoreLeader),
+            "cut_in" => Ok(Self::CutIn),
+            "traffic_rule" => Ok(Self::TrafficRule),
+            "jaywalking" => Ok(Self::Jaywalking),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for AdversityRecordKind {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for AdversityRecordKind {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+///Where it may fire, an `AdversityLocation` value.
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum AdversityRecordLocation {
+    #[serde(rename = "any")]
+    Any,
+    #[serde(rename = "intersection")]
+    Intersection,
+    #[serde(rename = "highway")]
+    Highway,
+    #[serde(rename = "roundabout")]
+    Roundabout,
+}
+impl ::std::fmt::Display for AdversityRecordLocation {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Any => f.write_str("any"),
+            Self::Intersection => f.write_str("intersection"),
+            Self::Highway => f.write_str("highway"),
+            Self::Roundabout => f.write_str("roundabout"),
+        }
+    }
+}
+impl ::std::str::FromStr for AdversityRecordLocation {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "any" => Ok(Self::Any),
+            "intersection" => Ok(Self::Intersection),
+            "highway" => Ok(Self::Highway),
+            "roundabout" => Ok(Self::Roundabout),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for AdversityRecordLocation {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for AdversityRecordLocation {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+///Their response: `avoid`, `accept`, or empty when none is driven (the ego is a victim).
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum AdversityRecordResponse {
+    #[serde(rename = "avoid")]
+    Avoid,
+    #[serde(rename = "accept")]
+    Accept,
+    #[serde(rename = "")]
+    X,
+}
+impl ::std::fmt::Display for AdversityRecordResponse {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Avoid => f.write_str("avoid"),
+            Self::Accept => f.write_str("accept"),
+            Self::X => f.write_str(""),
+        }
+    }
+}
+impl ::std::str::FromStr for AdversityRecordResponse {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "avoid" => Ok(Self::Avoid),
+            "accept" => Ok(Self::Accept),
+            "" => Ok(Self::X),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for AdversityRecordResponse {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for AdversityRecordResponse {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+///A vehicle other than the ego collided with a vehicle or a walker (`npc_collisions.NpcCollisionMonitor`): logged, not judged -- the ego's own collision condition is what fails a run. A contact is written when it begins (`phase: start`) and when it ends (`phase: end`, no event from the pair for a second), with how long it lasted. Added in version 2, which a reader of version 2 that does not know it skips.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct CollisionRecord {
+    ///The `role_name` of each side (its type id when it has none): the vehicle that heard it first.
+    pub actors: [::std::string::String; 2usize],
+    ///How long (s) the contact lasted, at its end; null at its start.
+    #[serde(deserialize_with = "::std::option::Option::deserialize")]
+    pub duration: ::std::option::Option<f64>,
+    ///Whether one side is the ego.
+    pub ego: bool,
+    ///The CARLA frame the collision happened on.
+    pub frame: SafeUInt,
+    ///The two actors' ids, in the order of `actors`.
+    pub ids: [ActorId; 2usize],
+    ///The magnitude of the collision's normal impulse (N*s); at a contact's end, the strongest during it.
+    pub impulse: f64,
+    ///`start` when the contact began, `end` when it ended.
+    pub phase: CollisionRecordPhase,
+    ///That tick's simulated time, seconds since the scenario clock started.
+    pub t: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///`start` when the contact began, `end` when it ended.
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum CollisionRecordPhase {
+    #[serde(rename = "start")]
+    Start,
+    #[serde(rename = "end")]
+    End,
+}
+impl ::std::fmt::Display for CollisionRecordPhase {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Start => f.write_str("start"),
+            Self::End => f.write_str("end"),
+        }
+    }
+}
+impl ::std::str::FromStr for CollisionRecordPhase {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "start" => Ok(Self::Start),
+            "end" => Ok(Self::End),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for CollisionRecordPhase {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for CollisionRecordPhase {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
 ///A pass or fail condition's state on a tick, written when it changes (version 2): on the first tick it is checked, then whenever it goes from satisfied to not or back. The run checks its conditions in order and stops at the first that decides it, so the last tick may leave later conditions out.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 pub struct ConditionRecord {
@@ -443,6 +744,82 @@ pub struct ConditionStatus {
     pub satisfied: bool,
     #[serde(flatten)]
     pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///A `DespawnAction` (`reason: action`), or the run for a walker lying fallen 5 s (`reason: fallen`), took an entity out of the world: its traffic backend let go of it and its actor was destroyed. Written on the tick it fired. Added in version 2, which a reader of version 2 that does not know it skips.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct DespawnRecord {
+    ///`role_name` of the entity removed.
+    pub entity: ::std::string::String,
+    ///The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).
+    pub frame: SafeUInt,
+    ///Its actor's id; null if it had no actor.
+    #[serde(deserialize_with = "::std::option::Option::deserialize")]
+    pub id: ::std::option::Option<ActorId>,
+    ///The action's label.
+    pub label: ::std::string::String,
+    ///What removed it: `action` a DespawnAction, `fallen` a walker that lay fallen.
+    pub reason: DespawnRecordReason,
+    ///That tick's simulated time, seconds since the scenario clock started.
+    pub t: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///What removed it: `action` a DespawnAction, `fallen` a walker that lay fallen.
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum DespawnRecordReason {
+    #[serde(rename = "action")]
+    Action,
+    #[serde(rename = "fallen")]
+    Fallen,
+}
+impl ::std::fmt::Display for DespawnRecordReason {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Action => f.write_str("action"),
+            Self::Fallen => f.write_str("fallen"),
+        }
+    }
+}
+impl ::std::str::FromStr for DespawnRecordReason {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "action" => Ok(Self::Action),
+            "fallen" => Ok(Self::Fallen),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for DespawnRecordReason {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for DespawnRecordReason {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
 }
 ///A file the run read: where it was, and what it held.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
@@ -675,6 +1052,25 @@ impl ::std::convert::TryFrom<String> for SafeUInt {
         value.parse()
     }
 }
+///A `SpawnAction` brought an entity into the scene (one spawned hidden, as a rule): put on its place, physics on, moving at its speed. Written on the tick it fired; the entity's `actor` record came earlier, when it was first seen hidden. A prop the action adds is not an entity and has no record. Added in version 2, which a reader of version 2 that does not know it skips.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct SpawnRecord {
+    ///`role_name` of the entity brought in.
+    pub entity: ::std::string::String,
+    ///The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).
+    pub frame: SafeUInt,
+    ///Its actor's id; null if it is not known.
+    #[serde(deserialize_with = "::std::option::Option::deserialize")]
+    pub id: ::std::option::Option<ActorId>,
+    ///The action's label.
+    pub label: ::std::string::String,
+    ///That tick's simulated time, seconds since the scenario clock started.
+    pub t: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
 ///[x, y, z, yaw]: a stop-line waypoint in the world frame (m) and its yaw (deg).
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
@@ -793,7 +1189,7 @@ impl ::std::convert::TryFrom<::std::string::String> for TrafficLightState {
         value.parse()
     }
 }
-///One line of a run's `{stem}.trajectory.jsonl`, written by `autoware_carla_scenario.trajectory_recorder.TrajectoryRecorder`, format version 2: one of ten records, told apart by `type`. Units, frames and the order of a file: docs/trajectory_log.md.
+///One line of a run's `{stem}.trajectory.jsonl`, written by `autoware_carla_scenario.trajectory_recorder.TrajectoryRecorder`, format version 2: one of seventeen records, told apart by `type`. Units, frames and the order of a file: docs/trajectory_log.md.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum TrajectoryRecord {
@@ -807,6 +1203,12 @@ pub enum TrajectoryRecord {
     MarkersRecord(MarkersRecord),
     ConditionRecord(ConditionRecord),
     ActionRecord(ActionRecord),
+    AdversityRecord(AdversityRecord),
+    WaypointArrivalRecord(WaypointArrivalRecord),
+    CollisionRecord(CollisionRecord),
+    WalkerFallenRecord(WalkerFallenRecord),
+    SpawnRecord(SpawnRecord),
+    DespawnRecord(DespawnRecord),
     ResultRecord(ResultRecord),
 }
 impl ::std::convert::From<WorldRecord> for TrajectoryRecord {
@@ -857,6 +1259,36 @@ impl ::std::convert::From<ConditionRecord> for TrajectoryRecord {
 impl ::std::convert::From<ActionRecord> for TrajectoryRecord {
     fn from(value: ActionRecord) -> Self {
         Self::ActionRecord(value)
+    }
+}
+impl ::std::convert::From<AdversityRecord> for TrajectoryRecord {
+    fn from(value: AdversityRecord) -> Self {
+        Self::AdversityRecord(value)
+    }
+}
+impl ::std::convert::From<WaypointArrivalRecord> for TrajectoryRecord {
+    fn from(value: WaypointArrivalRecord) -> Self {
+        Self::WaypointArrivalRecord(value)
+    }
+}
+impl ::std::convert::From<CollisionRecord> for TrajectoryRecord {
+    fn from(value: CollisionRecord) -> Self {
+        Self::CollisionRecord(value)
+    }
+}
+impl ::std::convert::From<WalkerFallenRecord> for TrajectoryRecord {
+    fn from(value: WalkerFallenRecord) -> Self {
+        Self::WalkerFallenRecord(value)
+    }
+}
+impl ::std::convert::From<SpawnRecord> for TrajectoryRecord {
+    fn from(value: SpawnRecord) -> Self {
+        Self::SpawnRecord(value)
+    }
+}
+impl ::std::convert::From<DespawnRecord> for TrajectoryRecord {
+    fn from(value: DespawnRecord) -> Self {
+        Self::DespawnRecord(value)
     }
 }
 impl ::std::convert::From<ResultRecord> for TrajectoryRecord {
@@ -947,6 +1379,26 @@ impl ::std::convert::From<(f64, f64, f64, i64)> for VehicleControl {
         Self(value)
     }
 }
+///A walker seen fallen over -- tipped beyond 50 degrees, or dropped more than half its height between two looks while barely moving sideways -- once per walker. It is left where it is. Added in version 2, which a reader of version 2 that does not know it skips.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct WalkerFallenRecord {
+    ///How far (m) it dropped since the look before (0 when it tipped over without dropping).
+    pub drop: f64,
+    ///The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).
+    pub frame: SafeUInt,
+    ///The walker's actor id.
+    pub id: ActorId,
+    ///Its `role_name` (its type id when it has none).
+    pub role: ::std::string::String,
+    ///That tick's simulated time, seconds since the scenario clock started.
+    pub t: f64,
+    ///How far (deg) it is tipped over: the larger of its pitch and roll.
+    pub tilt: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
 ///Where the warm-up ended, written once, before the first tick (version 2). The ticks of the warm-up -- the run's settling, init actions and its wait for the ego to be ready -- are not in the file: the file starts where the scenario clock does, and the CARLA recording starts `ticks` frames earlier.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 pub struct WarmupRecord {
@@ -961,6 +1413,148 @@ pub struct WarmupRecord {
     pub type_: ::serde_json::Value,
     #[serde(flatten)]
     pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///A routed entity reached a waypoint that carries an arrival time or a departure condition (`RoutingAction`, any mode): when it was due and when it arrived, so a run can be scored on its timing. Written on the tick the arrival is known: on arrival for a time, and once the condition has held for a condition. Added in version 2, which a reader of version 2 that does not know it skips.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct WaypointArrivalRecord {
+    ///Scenario time (s) it arrived there.
+    pub actual_t: f64,
+    ///`role_name` of the entity routed.
+    pub entity: ::std::string::String,
+    ///`actual_t - target_t`: positive late, negative early.
+    pub error_s: f64,
+    ///The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).
+    pub frame: SafeUInt,
+    ///What timed the waypoint: `time`, its arrival time, or `condition`, its departure condition (the target is the moment it first held).
+    pub kind: WaypointArrivalRecordKind,
+    ///The routing action's label.
+    pub label: ::std::string::String,
+    ///The routing mode: `driver` (the entity's own driver, paced by speed), `follow` or `position`.
+    pub mode: WaypointArrivalRecordMode,
+    ///That tick's simulated time, seconds since the scenario clock started.
+    pub t: f64,
+    ///Scenario time (s) the entity was due at the waypoint.
+    pub target_t: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    ///The waypoint's index among the route's vertices, from 0.
+    pub vertex: u64,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///What timed the waypoint: `time`, its arrival time, or `condition`, its departure condition (the target is the moment it first held).
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum WaypointArrivalRecordKind {
+    #[serde(rename = "time")]
+    Time,
+    #[serde(rename = "condition")]
+    Condition,
+}
+impl ::std::fmt::Display for WaypointArrivalRecordKind {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Time => f.write_str("time"),
+            Self::Condition => f.write_str("condition"),
+        }
+    }
+}
+impl ::std::str::FromStr for WaypointArrivalRecordKind {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "time" => Ok(Self::Time),
+            "condition" => Ok(Self::Condition),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for WaypointArrivalRecordKind {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for WaypointArrivalRecordKind {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+///The routing mode: `driver` (the entity's own driver, paced by speed), `follow` or `position`.
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum WaypointArrivalRecordMode {
+    #[serde(rename = "driver")]
+    Driver,
+    #[serde(rename = "follow")]
+    Follow,
+    #[serde(rename = "position")]
+    Position,
+}
+impl ::std::fmt::Display for WaypointArrivalRecordMode {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Driver => f.write_str("driver"),
+            Self::Follow => f.write_str("follow"),
+            Self::Position => f.write_str("position"),
+        }
+    }
+}
+impl ::std::str::FromStr for WaypointArrivalRecordMode {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "driver" => Ok(Self::Driver),
+            "follow" => Ok(Self::Follow),
+            "position" => Ok(Self::Position),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for WaypointArrivalRecordMode {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for WaypointArrivalRecordMode {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
 }
 ///The first line of the file: the world the run recorded.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
@@ -1021,6 +1615,12 @@ pub const RECORD_TYPES: &[(&str, &str)] = &[
     ("markers", "MarkersRecord"),
     ("condition", "ConditionRecord"),
     ("action", "ActionRecord"),
+    ("adversity", "AdversityRecord"),
+    ("waypoint_arrival", "WaypointArrivalRecord"),
+    ("collision", "CollisionRecord"),
+    ("walker_fallen", "WalkerFallenRecord"),
+    ("spawn", "SpawnRecord"),
+    ("despawn", "DespawnRecord"),
     ("result", "ResultRecord"),
 ];
 /// The format version the schema describes (`x-schema-version`).
@@ -1065,6 +1665,20 @@ impl UnknownFields for ActorRecord {
         }
     }
 }
+impl UnknownFields for AdversityRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for CollisionRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
 impl UnknownFields for ConditionRecord {
     fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
         for key in self.extra.keys() {
@@ -1073,6 +1687,13 @@ impl UnknownFields for ConditionRecord {
     }
 }
 impl UnknownFields for ConditionStatus {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for DespawnRecord {
     fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
         for key in self.extra.keys() {
             out(format!("{path}.{key}"));
@@ -1118,6 +1739,13 @@ impl UnknownFields for ResultRecord {
         self.conditions.unknown_fields(&format!("{path}.conditions"), out);
     }
 }
+impl UnknownFields for SpawnRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
 impl UnknownFields for TickRecord {
     fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
         for key in self.extra.keys() {
@@ -1132,7 +1760,21 @@ impl UnknownFields for TrafficLightRecord {
         }
     }
 }
+impl UnknownFields for WalkerFallenRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
 impl UnknownFields for WarmupRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for WaypointArrivalRecord {
     fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
         for key in self.extra.keys() {
             out(format!("{path}.{key}"));

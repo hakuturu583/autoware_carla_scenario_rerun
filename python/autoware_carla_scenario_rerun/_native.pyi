@@ -43,6 +43,7 @@ class Stats(TypedDict):
     markers: int
     conditions: int
     actions: int
+    events: int
     has_result: bool
     #: The Lanelet2 map drawn, if any.
     map: str | None

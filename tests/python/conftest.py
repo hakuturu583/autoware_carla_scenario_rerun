@@ -106,6 +106,32 @@ def v2_records(map_path: Path = TEST_MAP, ticks: int = 40) -> list[dict[str, Any
         if i == 0:
             records.append({"type": "action", "frame": frame, "t": t, "phase": "pre_tick", "index": 0,
                             "label": "lead speed", "action_type": "SetSpeedAction", "state": "runningState"})
+        # The scenario's events: an adversity, a timed waypoint, a collision
+        # between others that starts and ends, a walker down, a spawn, a despawn
+        # (each on a frame of its own: the dataframe reader keeps one row a frame).
+        if i == 8:
+            records.append({"type": "adversity", "frame": frame, "t": t, "label": "nade", "agent": "npc",
+                            "kind": "cut_in", "location": "any", "probability": 0.25, "is_probability": 0.5,
+                            "weight": 0.5, "avoidable": True, "victims": ["ego"], "response": ""})
+        if i == 9:
+            records.append({"type": "waypoint_arrival", "frame": frame, "t": t, "label": "route", "entity": "npc",
+                            "vertex": 1, "kind": "time", "mode": "driver", "target_t": 0.3, "actual_t": t,
+                            "error_s": round(t - 0.3, 3)})
+        if i == 10:
+            records.append({"type": "spawn", "frame": frame, "t": t, "label": "appear", "entity": "pedestrian",
+                            "id": 3})
+        if i == 12:
+            records.append({"type": "collision", "frame": frame, "t": t, "actors": ["npc", "pedestrian"],
+                            "ids": [2, 3], "impulse": 120.0, "ego": False, "phase": "start", "duration": None})
+        if i == 14:
+            records.append({"type": "collision", "frame": frame, "t": t, "actors": ["npc", "pedestrian"],
+                            "ids": [2, 3], "impulse": 150.0, "ego": False, "phase": "end", "duration": 0.1})
+        if i == 16:
+            records.append({"type": "walker_fallen", "frame": frame, "t": t, "id": 3, "role": "pedestrian",
+                            "drop": 0.6, "tilt": 70.0})
+        if i == 35:
+            records.append({"type": "despawn", "frame": frame, "t": t, "label": "", "entity": "pedestrian",
+                            "id": 3, "reason": "fallen"})
     records.append({
         "type": "result", "passed": True, "message": "reached the goal", "elapsed_seconds": round(0.05 * (ticks - 1), 3),
         "conditions": [

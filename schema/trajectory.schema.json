@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "urn:autoware-carla-scenario:schemas:trajectory",
   "title": "TrajectoryRecord",
-  "description": "One line of a run's `{stem}.trajectory.jsonl`, written by `autoware_carla_scenario.trajectory_recorder.TrajectoryRecorder`, format version 2: one of ten records, told apart by `type`. Units, frames and the order of a file: docs/trajectory_log.md.",
+  "description": "One line of a run's `{stem}.trajectory.jsonl`, written by `autoware_carla_scenario.trajectory_recorder.TrajectoryRecorder`, format version 2: one of seventeen records, told apart by `type`. Units, frames and the order of a file: docs/trajectory_log.md.",
   "x-schema-version": 2,
   "oneOf": [
     {
@@ -36,6 +36,24 @@
       "$ref": "#/$defs/ActionRecord"
     },
     {
+      "$ref": "#/$defs/AdversityRecord"
+    },
+    {
+      "$ref": "#/$defs/WaypointArrivalRecord"
+    },
+    {
+      "$ref": "#/$defs/CollisionRecord"
+    },
+    {
+      "$ref": "#/$defs/WalkerFallenRecord"
+    },
+    {
+      "$ref": "#/$defs/SpawnRecord"
+    },
+    {
+      "$ref": "#/$defs/DespawnRecord"
+    },
+    {
       "$ref": "#/$defs/ResultRecord"
     }
   ],
@@ -52,6 +70,12 @@
       "markers": "#/$defs/MarkersRecord",
       "condition": "#/$defs/ConditionRecord",
       "action": "#/$defs/ActionRecord",
+      "adversity": "#/$defs/AdversityRecord",
+      "waypoint_arrival": "#/$defs/WaypointArrivalRecord",
+      "collision": "#/$defs/CollisionRecord",
+      "walker_fallen": "#/$defs/WalkerFallenRecord",
+      "spawn": "#/$defs/SpawnRecord",
+      "despawn": "#/$defs/DespawnRecord",
       "result": "#/$defs/ResultRecord"
     }
   },
@@ -536,6 +560,397 @@
         "label",
         "action_type",
         "state"
+      ],
+      "additionalProperties": false
+    },
+    "AdversityRecord": {
+      "title": "AdversityRecord",
+      "description": "An adversity NADE sampled on a tick (`AdversarialTrafficAction`, #397): who carries it out, what it is, the probabilities it was sampled with and the run's importance-sampling weight once it was. Written on the tick it was sampled; a run without NADE has none. Added in version 2, which a reader of version 2 that does not know it skips.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "adversity"
+        },
+        "frame": {
+          "description": "The CARLA frame of the tick it belongs to, as an action record's.",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        },
+        "label": {
+          "description": "The label of the action that sampled it.",
+          "type": "string"
+        },
+        "agent": {
+          "description": "The role name of who carries it out.",
+          "type": "string"
+        },
+        "kind": {
+          "description": "Its kind, an `AdversityKind` value.",
+          "type": "string",
+          "enum": [
+            "brake_check",
+            "ignore_leader",
+            "cut_in",
+            "traffic_rule",
+            "jaywalking"
+          ]
+        },
+        "location": {
+          "description": "Where it may fire, an `AdversityLocation` value.",
+          "type": "string",
+          "enum": [
+            "any",
+            "intersection",
+            "highway",
+            "roundabout"
+          ]
+        },
+        "probability": {
+          "description": "Its naturalistic probability p a tick, cut for an unavoidable one.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "is_probability": {
+          "description": "The importance-sampling probability q it was sampled with.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "weight": {
+          "description": "The run's importance-sampling weight once it was sampled, its victims' response included.",
+          "type": "number",
+          "minimum": 0
+        },
+        "avoidable": {
+          "description": "Whether its victims could brake out of it.",
+          "type": "boolean"
+        },
+        "victims": {
+          "description": "The NPCs that respond to it, by role name.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "response": {
+          "description": "Their response: `avoid`, `accept`, or empty when none is driven (the ego is a victim).",
+          "type": "string",
+          "enum": [
+            "avoid",
+            "accept",
+            ""
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "label",
+        "agent",
+        "kind",
+        "location",
+        "probability",
+        "is_probability",
+        "weight",
+        "avoidable",
+        "victims",
+        "response"
+      ],
+      "additionalProperties": false
+    },
+    "WaypointArrivalRecord": {
+      "title": "WaypointArrivalRecord",
+      "description": "A routed entity reached a waypoint that carries an arrival time or a departure condition (`RoutingAction`, any mode): when it was due and when it arrived, so a run can be scored on its timing. Written on the tick the arrival is known: on arrival for a time, and once the condition has held for a condition. Added in version 2, which a reader of version 2 that does not know it skips.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "waypoint_arrival"
+        },
+        "frame": {
+          "description": "The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        },
+        "label": {
+          "description": "The routing action's label.",
+          "type": "string"
+        },
+        "entity": {
+          "description": "`role_name` of the entity routed.",
+          "type": "string"
+        },
+        "vertex": {
+          "description": "The waypoint's index among the route's vertices, from 0.",
+          "type": "integer",
+          "minimum": 0
+        },
+        "kind": {
+          "description": "What timed the waypoint: `time`, its arrival time, or `condition`, its departure condition (the target is the moment it first held).",
+          "type": "string",
+          "enum": [
+            "time",
+            "condition"
+          ]
+        },
+        "mode": {
+          "description": "The routing mode: `driver` (the entity's own driver, paced by speed), `follow` or `position`.",
+          "type": "string",
+          "enum": [
+            "driver",
+            "follow",
+            "position"
+          ]
+        },
+        "target_t": {
+          "description": "Scenario time (s) the entity was due at the waypoint.",
+          "type": "number"
+        },
+        "actual_t": {
+          "description": "Scenario time (s) it arrived there.",
+          "type": "number"
+        },
+        "error_s": {
+          "description": "`actual_t - target_t`: positive late, negative early.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "label",
+        "entity",
+        "vertex",
+        "kind",
+        "mode",
+        "target_t",
+        "actual_t",
+        "error_s"
+      ],
+      "additionalProperties": false
+    },
+    "CollisionRecord": {
+      "title": "CollisionRecord",
+      "description": "A vehicle other than the ego collided with a vehicle or a walker (`npc_collisions.NpcCollisionMonitor`): logged, not judged -- the ego's own collision condition is what fails a run. A contact is written when it begins (`phase: start`) and when it ends (`phase: end`, no event from the pair for a second), with how long it lasted. Added in version 2, which a reader of version 2 that does not know it skips.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "collision"
+        },
+        "frame": {
+          "description": "The CARLA frame the collision happened on.",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        },
+        "actors": {
+          "description": "The `role_name` of each side (its type id when it has none): the vehicle that heard it first.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "ids": {
+          "description": "The two actors' ids, in the order of `actors`.",
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ActorId"
+          },
+          "minItems": 2,
+          "maxItems": 2
+        },
+        "impulse": {
+          "description": "The magnitude of the collision's normal impulse (N*s); at a contact's end, the strongest during it.",
+          "type": "number",
+          "minimum": 0
+        },
+        "ego": {
+          "description": "Whether one side is the ego.",
+          "type": "boolean"
+        },
+        "phase": {
+          "description": "`start` when the contact began, `end` when it ended.",
+          "type": "string",
+          "enum": [
+            "start",
+            "end"
+          ]
+        },
+        "duration": {
+          "description": "How long (s) the contact lasted, at its end; null at its start.",
+          "type": [
+            "number",
+            "null"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "actors",
+        "ids",
+        "impulse",
+        "ego",
+        "phase",
+        "duration"
+      ],
+      "additionalProperties": false
+    },
+    "WalkerFallenRecord": {
+      "title": "WalkerFallenRecord",
+      "description": "A walker seen fallen over -- tipped beyond 50 degrees, or dropped more than half its height between two looks while barely moving sideways -- once per walker. It is left where it is. Added in version 2, which a reader of version 2 that does not know it skips.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "walker_fallen"
+        },
+        "frame": {
+          "description": "The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        },
+        "id": {
+          "description": "The walker's actor id.",
+          "$ref": "#/$defs/ActorId"
+        },
+        "role": {
+          "description": "Its `role_name` (its type id when it has none).",
+          "type": "string"
+        },
+        "drop": {
+          "description": "How far (m) it dropped since the look before (0 when it tipped over without dropping).",
+          "type": "number"
+        },
+        "tilt": {
+          "description": "How far (deg) it is tipped over: the larger of its pitch and roll.",
+          "type": "number"
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "id",
+        "role",
+        "drop",
+        "tilt"
+      ],
+      "additionalProperties": false
+    },
+    "SpawnRecord": {
+      "title": "SpawnRecord",
+      "description": "A `SpawnAction` brought an entity into the scene (one spawned hidden, as a rule): put on its place, physics on, moving at its speed. Written on the tick it fired; the entity's `actor` record came earlier, when it was first seen hidden. A prop the action adds is not an entity and has no record. Added in version 2, which a reader of version 2 that does not know it skips.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "spawn"
+        },
+        "frame": {
+          "description": "The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        },
+        "label": {
+          "description": "The action's label.",
+          "type": "string"
+        },
+        "entity": {
+          "description": "`role_name` of the entity brought in.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Its actor's id; null if it is not known.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActorId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "label",
+        "entity",
+        "id"
+      ],
+      "additionalProperties": false
+    },
+    "DespawnRecord": {
+      "title": "DespawnRecord",
+      "description": "A `DespawnAction` (`reason: action`), or the run for a walker lying fallen 5 s (`reason: fallen`), took an entity out of the world: its traffic backend let go of it and its actor was destroyed. Written on the tick it fired. Added in version 2, which a reader of version 2 that does not know it skips.",
+      "type": "object",
+      "properties": {
+        "type": {
+          "const": "despawn"
+        },
+        "frame": {
+          "description": "The CARLA frame of the tick it belongs to: the `frame` of a tick record (or of a tick left out for having no vehicle or walker in it).",
+          "$ref": "#/$defs/SafeUInt"
+        },
+        "t": {
+          "description": "That tick's simulated time, seconds since the scenario clock started.",
+          "type": "number"
+        },
+        "label": {
+          "description": "The action's label.",
+          "type": "string"
+        },
+        "entity": {
+          "description": "`role_name` of the entity removed.",
+          "type": "string"
+        },
+        "id": {
+          "description": "Its actor's id; null if it had no actor.",
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ActorId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "description": "What removed it: `action` a DespawnAction, `fallen` a walker that lay fallen.",
+          "type": "string",
+          "enum": [
+            "action",
+            "fallen"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "frame",
+        "t",
+        "label",
+        "entity",
+        "id",
+        "reason"
       ],
       "additionalProperties": false
     },

@@ -26,6 +26,7 @@
 //! | `scenario/actions/<label>` | each action's lifecycle (standby, start, running, end, complete), from the `action` records (`StateChange`) |
 //! | `scenario/conditions/<role>/<label>` | satisfied / not satisfied, from the `condition` records (`StateChange`) |
 //! | `scenario/traffic_lights/<id>` | each light's state over time (`StateChange`) |
+//! | `scenario/events` | adversities, timed waypoint arrivals, collisions between other road users, walkers fallen, spawns and despawns, `TextLog` (a collision or a fall WARN) |
 //! | `result`, `result/log`, `result/passed` | the verdict |
 //! | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
 //! | `diagnostics/...` | what the conversion skipped or could not find, `TextLog` WARN (static) |
@@ -169,6 +170,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     let mut gone: Vec<&g::ActorGoneRecord> = Vec::new();
     let mut conditions: BTreeMap<(String, u64), Vec<&g::ConditionRecord>> = BTreeMap::new();
     let mut actions: BTreeMap<(String, u64), Vec<&g::ActionRecord>> = BTreeMap::new();
+    let mut events: Vec<&Record> = Vec::new();
     let mut world = None;
     let mut map_record = None;
     let mut warmup = None;
@@ -200,6 +202,12 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
                     .or_default()
                     .push(r);
             }
+            Record::Adversity(_)
+            | Record::WaypointArrival(_)
+            | Record::Collision(_)
+            | Record::WalkerFallen(_)
+            | Record::Spawn(_)
+            | Record::Despawn(_) => events.push(&located.record),
             Record::Result(r) => result = Some(r),
         }
     }
@@ -224,6 +232,10 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     write_condition_states(&mut w, &conditions)?;
     write_action_states(&mut w, &actions)?;
     write_light_states(&mut w, ticks, &names)?;
+    write_events(
+        &mut w,
+        events.iter().filter_map(|r| event(r, &actors)).collect(),
+    )?;
     if let Some(map) = &inputs.map {
         write_map(&mut w, map)?;
     }
@@ -892,6 +904,140 @@ fn write_markers(w: &mut Writer, markers: &[&g::MarkersRecord]) -> RrResult<()> 
         .columns(point_lengths)
         .map_err(err)?;
     w.columns("world/ego/plan/points", &frames, &times, columns)
+}
+
+/// A scenario event, as `scenario/events` logs it.
+struct Event {
+    frame: i64,
+    t: f64,
+    text: String,
+    /// A collision or a fall: logged as a warning.
+    warn: bool,
+}
+
+/// `label: text`, or `text` alone for what has no label.
+fn labelled(label: &str, text: String) -> String {
+    if label.is_empty() {
+        text
+    } else {
+        format!("{label}: {text}")
+    }
+}
+
+/// An entity a spawn or despawn names, and its actor as `world/actors` labels it.
+fn entity_name(
+    entity: &str,
+    id: Option<&g::ActorId>,
+    actors: &HashMap<u32, &g::ActorRecord>,
+) -> String {
+    match id {
+        Some(id) => format!(
+            "{entity} ({})",
+            actor_label(id.0, actors.get(&id.0).copied())
+        ),
+        None => entity.to_string(),
+    }
+}
+
+/// The event `record` is, or `None` for a record that is no event.
+fn event(record: &Record, actors: &HashMap<u32, &g::ActorRecord>) -> Option<Event> {
+    let (frame, t, text, warn) = match record {
+        Record::Adversity(r) => {
+            let mut text = format!(
+                "adversity {} by {} at {} (p {:.3}, q {:.3}, weight {:.3}, {})",
+                r.kind,
+                r.agent,
+                r.location,
+                r.probability,
+                r.is_probability,
+                r.weight,
+                if r.avoidable {
+                    "avoidable"
+                } else {
+                    "unavoidable"
+                },
+            );
+            if !r.victims.is_empty() {
+                text.push_str(&format!(", victims {}", r.victims.join(" ")));
+            }
+            let response = r.response.to_string();
+            if !response.is_empty() {
+                text.push_str(&format!(", response {response}"));
+            }
+            (r.frame.0, r.t, labelled(&r.label, text), false)
+        }
+        Record::WaypointArrival(r) => {
+            let text = format!(
+                "{} reached waypoint {} ({} target, {} mode) at {:.2} s, {:+.2} s from {:.2} s",
+                r.entity, r.vertex, r.kind, r.mode, r.actual_t, r.error_s, r.target_t
+            );
+            (r.frame.0, r.t, labelled(&r.label, text), false)
+        }
+        Record::Collision(r) => {
+            let [a, b] = &r.actors;
+            let [ia, ib] = &r.ids;
+            let mut text = format!(
+                "collision {}: {a} ({}) and {b} ({}), impulse {:.1} N*s",
+                r.phase, ia.0, ib.0, r.impulse
+            );
+            if let Some(duration) = r.duration {
+                text.push_str(&format!(", lasted {duration:.2} s"));
+            }
+            if r.ego {
+                text.push_str(", the ego");
+            }
+            (r.frame.0, r.t, text, true)
+        }
+        Record::WalkerFallen(r) => {
+            let text = format!(
+                "walker {} {} fell (dropped {:.2} m, tilted {:.0} deg)",
+                r.id.0, r.role, r.drop, r.tilt
+            );
+            (r.frame.0, r.t, text, true)
+        }
+        Record::Spawn(r) => {
+            let text = format!("spawned {}", entity_name(&r.entity, r.id.as_ref(), actors));
+            (r.frame.0, r.t, labelled(&r.label, text), false)
+        }
+        Record::Despawn(r) => {
+            let text = format!(
+                "despawned {} ({})",
+                entity_name(&r.entity, r.id.as_ref(), actors),
+                r.reason
+            );
+            (r.frame.0, r.t, labelled(&r.label, text), false)
+        }
+        _ => return None,
+    };
+    Some(Event {
+        frame,
+        t,
+        text,
+        warn,
+    })
+}
+
+/// The scenario's events, in the order they happened, as one `TextLog`.
+fn write_events(w: &mut Writer, mut events: Vec<Event>) -> RrResult<()> {
+    events.sort_by_key(|e| e.frame);
+    let frames: Vec<i64> = events.iter().map(|e| e.frame).collect();
+    let times: Vec<f64> = events.iter().map(|e| e.t).collect();
+    let levels: Vec<&str> = events
+        .iter()
+        .map(|e| {
+            if e.warn {
+                rerun::TextLogLevel::WARN
+            } else {
+                rerun::TextLogLevel::INFO
+            }
+        })
+        .collect();
+    let columns = TextLog::update_fields()
+        .with_many_text(events.into_iter().map(|e| e.text))
+        .with_many_level(levels)
+        .columns_of_unit_batches()
+        .map_err(err)?;
+    w.columns("scenario/events", &frames, &times, columns)
 }
 
 fn write_conditions(
