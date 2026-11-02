@@ -1,6 +1,6 @@
 # Where schema/trajectory.schema.json was copied from (tools/update_schema.sh writes this).
 repository: autowarefoundation/autoware_carla_scenario
 path: autoware_carla_scenario/src/autoware_carla_scenario/schemas/trajectory.schema.json
-ref: 9958a9b1e403bb074a72d25206c5f1eff0576e4a
+ref: 7f0656a5a329ec5d66facc742b1f05970e1eac52
 x-schema-version: 2
-sha256: 8d8b36cfded7089eb046f0388f3ce59877859088f9593233ed8aef68d7a73541
+sha256: ccbba684c92fafd29ab2a54339e8492accedfc494dddf6673b46c8e4b6222836

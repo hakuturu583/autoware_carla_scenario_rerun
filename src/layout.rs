@@ -16,9 +16,10 @@
 //! | `Plan speed` (2D) | `plan_profile/speed`: the current plan's speed against its time ahead, and the previous plan's |
 //! | `Plan` (time series) | `plan/**`: the policy's inference time and diagnostics |
 //!
-//! A run with metrics (`metric` records) has a `Metrics` time series view,
-//! `metrics/**`, in that column too, below the plan's views when there are
-//! any.
+//! A run with metrics (`metric` records) has them in that column too, below
+//! the plan's views when there are any: `Metrics` (time series,
+//! `metrics/**`) for the numbers, `Metric states` (state timeline,
+//! `metric_states/**`) for the booleans and enums.
 //!
 //! The blueprint is written with the blueprint archetypes directly: the Rust
 //! SDK's `Spatial3DView` cannot set the eye.
@@ -121,14 +122,16 @@ impl Builder {
 
 /// Sends the layout into `rec`, active at once. `chase`: there is an ego to
 /// follow (`EGO_POSE` is logged); `plans`: a driver policy's plans are;
-/// `metrics`: the metrics the run computed are.
+/// `metric_series`, `metric_states`: the run computed metrics that are
+/// numbers, and that are booleans or enums.
 pub fn send(
     rec: &RecordingStream,
     application_id: &'static str,
     recording_id: &str,
     chase: bool,
     plans: bool,
-    metrics: bool,
+    metric_series: bool,
+    metric_states: bool,
 ) -> BpResult<()> {
     let (bp, storage) = RecordingStreamBuilder::new(application_id)
         .recording_id(format!("{recording_id}.blueprint"))
@@ -186,8 +189,16 @@ pub fn send(
         side_views.push(b.view("2D", "Plan speed", "/plan_profile", &["$origin/**"])?);
         side_views.push(b.view("TimeSeries", "Plan", "/plan", &["$origin/**"])?);
     }
-    if metrics {
+    if metric_series {
         side_views.push(b.view("TimeSeries", "Metrics", "/metrics", &["$origin/**"])?);
+    }
+    if metric_states {
+        side_views.push(b.view(
+            "StateTimeline",
+            "Metric states",
+            "/metric_states",
+            &["$origin/**"],
+        )?);
     }
     let root = if side_views.is_empty() {
         column

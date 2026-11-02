@@ -455,6 +455,16 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
             ),
         ));
     }
+    let kinds = rrd::metric_kinds(parsed.records.iter().filter_map(|l| match &l.record {
+        Record::Metric(m) => Some(m),
+        _ => None,
+    }));
+    for (key, mismatch) in &kinds.mismatched {
+        warnings.push((
+            format!("metric_kinds/{key}"),
+            mismatch.warning(key, kinds.kinds[key]),
+        ));
+    }
     if parsed.lines == 0 {
         warnings.push(("empty".into(), "the trajectory log is empty".into()));
     }

@@ -1155,11 +1155,13 @@
           "type": "number"
         },
         "values": {
-          "description": "Each metric computed for the tick, by its key (`metrics.BUILT_IN_METRICS`): its value in the metric's unit, or null where it read nothing or no finite number (a time to collision that never comes).",
+          "description": "Each metric computed for the tick, by its key (`metrics.BUILT_IN_METRICS`): a number in the metric's unit, a boolean (a yes/no metric), or a string (a metric that names one of its states, an enum); null where it read nothing or no finite number (a time to collision that never comes). A metric's values are of one kind, but for null.",
           "type": "object",
           "additionalProperties": {
             "type": [
               "number",
+              "boolean",
+              "string",
               "null"
             ]
           }

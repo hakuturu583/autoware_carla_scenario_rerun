@@ -21,6 +21,7 @@
 //! | `scenario/turn_indicator` | the turn indicators the policy commanded (`StateChange`; a plan with no command leaves them) |
 //! | `ego/speed_mps`, `ego/control` | the ego's speed, and throttle/steer/brake (`Scalars`) |
 //! | `metrics/<key>` | each metric the run computed once it was over, per frame it was computed for (`metric` records, `Scalars`; NaN where it read nothing) |
+//! | `metric_states/<key>` | each boolean or enum (string) metric the run computed, as states (`StateChange`, wherever it changed; `(no value)` where it read nothing) |
 //! | `world/traffic_lights` | the light heads, wireframe boxes (static) |
 //! | `world/traffic_lights/bulbs` | three bulbs per head (red, yellow, green), the one the state names lit |
 //! | `world/traffic_lights/tags` | each light's Lanelet2 id (else `carla <id>`) and state, written above it in the light's colour |
@@ -78,6 +79,9 @@ const PLAN_COLOR: [u8; 3] = [0, 255, 0];
 const PREVIOUS_PLAN_COLOR: [u8; 3] = [160, 160, 160];
 const TURN_LEFT_COLOR: [u8; 3] = [255, 170, 0];
 const TURN_RIGHT_COLOR: [u8; 3] = [0, 170, 255];
+const METRIC_TRUE_COLOR: [u8; 3] = [255, 170, 0];
+const METRIC_FALSE_COLOR: [u8; 3] = [90, 90, 90];
+const NO_VALUE_COLOR: [u8; 3] = [40, 40, 40];
 
 fn rgb(c: [u8; 3]) -> Color {
     Color::from_rgb(c[0], c[1], c[2])
@@ -228,6 +232,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
         }
     }
     let result = result.or(inputs.result);
+    let kinds = metric_kinds(metrics.iter().copied());
 
     write_info(&mut w, parsed, world, map_record, warmup)?;
     let ticks = &parsed.ticks;
@@ -238,7 +243,8 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
         inputs.recording_id,
         ego.is_some(),
         !plans.is_empty(),
-        !metrics.is_empty(),
+        kinds.kinds.values().any(|k| *k == MetricKind::Number),
+        kinds.kinds.values().any(|k| *k != MetricKind::Number),
     )?;
     write_actors(&mut w, ticks, &actors, &gone)?;
     if let Some(ego) = ego {
@@ -253,7 +259,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
         .filter(|m| m.polylines.is_empty())
         .collect();
     write_plans(&mut w, &plans, &cleared)?;
-    write_metrics(&mut w, &metrics)?;
+    write_metrics(&mut w, &metrics, &kinds)?;
     write_conditions(&mut w, ticks, &conditions)?;
     if let Some(result) = result {
         write_result(&mut w, ticks, result)?;
@@ -1255,18 +1261,165 @@ fn write_plans(
     )
 }
 
-/// The `metric` records: one series per metric, `metrics/<key>`, over the
-/// frames it was computed for, in frame order; NaN where it read nothing.
-fn write_metrics(w: &mut Writer, metrics: &[&g::MetricRecord]) -> RrResult<()> {
+/// What a metric's values are: the kind of its first value that is not null.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MetricKind {
+    /// Numbers: a series, `metrics/<key>`.
+    Number,
+    /// Yes/no: a state timeline, `metric_states/<key>`.
+    Boolean,
+    /// Strings naming the metric's state (an enum): a state timeline,
+    /// `metric_states/<key>`.
+    Enum,
+}
+
+impl MetricKind {
+    fn of(value: &g::MetricRecordValuesValue) -> Option<MetricKind> {
+        match value {
+            g::MetricRecordValuesValue::Null => None,
+            g::MetricRecordValuesValue::Number(_) => Some(MetricKind::Number),
+            g::MetricRecordValuesValue::Boolean(_) => Some(MetricKind::Boolean),
+            g::MetricRecordValuesValue::String(_) => Some(MetricKind::Enum),
+        }
+    }
+
+    fn name(self) -> &'static str {
+        match self {
+            MetricKind::Number => "a number",
+            MetricKind::Boolean => "a boolean",
+            MetricKind::Enum => "a string",
+        }
+    }
+}
+
+/// Values of a metric that are not of its kind: how many, and the frame of
+/// the first, with its kind.
+#[derive(Clone, Debug)]
+pub struct MetricMismatch {
+    pub count: u64,
+    pub first_frame: i64,
+    pub first_kind: MetricKind,
+}
+
+/// Each metric's kind (a metric with no value but null is a number: a series
+/// of NaN), and the values that are not of it -- drawn as no value.
+#[derive(Clone, Debug, Default)]
+pub struct MetricKinds {
+    pub kinds: BTreeMap<String, MetricKind>,
+    pub mismatched: BTreeMap<String, MetricMismatch>,
+}
+
+/// The kinds of the metrics of `metrics`, in frame order.
+pub fn metric_kinds<'a>(metrics: impl IntoIterator<Item = &'a g::MetricRecord>) -> MetricKinds {
+    let mut sorted: Vec<&g::MetricRecord> = metrics.into_iter().collect();
+    sorted.sort_by_key(|m| m.frame.0);
+    let mut out = MetricKinds::default();
+    for m in &sorted {
+        for (key, value) in &m.values {
+            let Some(kind) = MetricKind::of(value) else {
+                continue;
+            };
+            let first = *out.kinds.entry(key.clone()).or_insert(kind);
+            if first != kind {
+                out.mismatched
+                    .entry(key.clone())
+                    .and_modify(|x| x.count += 1)
+                    .or_insert(MetricMismatch {
+                        count: 1,
+                        first_frame: m.frame.0,
+                        first_kind: kind,
+                    });
+            }
+        }
+    }
+    // A metric that was only ever null: a series of NaN.
+    for m in &sorted {
+        for key in m.values.keys() {
+            out.kinds.entry(key.clone()).or_insert(MetricKind::Number);
+        }
+    }
+    out
+}
+
+impl MetricMismatch {
+    /// The warning that says so, for `key` of kind `kind`.
+    pub fn warning(&self, key: &str, kind: MetricKind) -> String {
+        format!(
+            "metric `{key}` is {}, but {} of its value(s) are not (the first, {} at frame {}): drawn as no value",
+            kind.name(),
+            self.count,
+            self.first_kind.name(),
+            self.first_frame
+        )
+    }
+}
+
+/// A boolean or enum metric's states, where they changed.
+#[derive(Default)]
+struct States {
+    frames: Vec<i64>,
+    times: Vec<f64>,
+    values: Vec<String>,
+}
+
+/// What the state timeline shows for a value of a boolean or enum metric
+/// that is null, or not of its kind.
+const NO_VALUE: &str = "(no value)";
+/// The colours of an enum metric's states, in the order they first appear.
+const ENUM_COLORS: [[u8; 3]; 8] = [
+    [64, 160, 255],
+    [255, 170, 0],
+    [0, 200, 80],
+    [230, 50, 50],
+    [170, 100, 255],
+    [0, 200, 200],
+    [255, 100, 180],
+    [200, 200, 60],
+];
+
+/// The `metric` records, each metric by its kind ([`metric_kinds`]): a
+/// number's as a series, `metrics/<key>`, over the frames it was computed
+/// for (NaN where it read nothing); a boolean's or an enum's as a state
+/// timeline, `metric_states/<key>`, a state change wherever it changed.
+fn write_metrics(
+    w: &mut Writer,
+    metrics: &[&g::MetricRecord],
+    kinds: &MetricKinds,
+) -> RrResult<()> {
     let mut sorted: Vec<&g::MetricRecord> = metrics.to_vec();
     sorted.sort_by_key(|m| m.frame.0);
     let mut series: BTreeMap<&str, Series> = BTreeMap::new();
+    let mut states: BTreeMap<&str, States> = BTreeMap::new();
     for m in &sorted {
         for (key, value) in &m.values {
-            let s = series.entry(key.as_str()).or_default();
-            s.frames.push(m.frame.0);
-            s.times.push(m.t);
-            s.values.push(value.unwrap_or(f64::NAN));
+            let kind = kinds.kinds.get(key).copied().unwrap_or(MetricKind::Number);
+            match kind {
+                MetricKind::Number => {
+                    let s = series.entry(key.as_str()).or_default();
+                    s.frames.push(m.frame.0);
+                    s.times.push(m.t);
+                    s.values.push(match value {
+                        g::MetricRecordValuesValue::Number(v) => *v,
+                        _ => f64::NAN,
+                    });
+                }
+                MetricKind::Boolean | MetricKind::Enum => {
+                    let state = match (kind, value) {
+                        (MetricKind::Boolean, g::MetricRecordValuesValue::Boolean(b)) => {
+                            b.to_string()
+                        }
+                        (MetricKind::Enum, g::MetricRecordValuesValue::String(s)) => s.clone(),
+                        _ => NO_VALUE.to_string(),
+                    };
+                    let s = states.entry(key.as_str()).or_default();
+                    // A state change only where it changed.
+                    if s.values.last() != Some(&state) {
+                        s.frames.push(m.frame.0);
+                        s.times.push(m.t);
+                        s.values.push(state);
+                    }
+                }
+            }
         }
     }
     for (key, s) in &series {
@@ -1276,6 +1429,34 @@ fn write_metrics(w: &mut Writer, metrics: &[&g::MetricRecord]) -> RrResult<()> {
             .columns_of_unit_batches()
             .map_err(err)?;
         w.columns(&path, &s.frames, &s.times, columns)?;
+    }
+    for (
+        key,
+        States {
+            frames,
+            times,
+            values,
+        },
+    ) in states
+    {
+        let mut styles: Vec<(&str, String, [u8; 3])> = Vec::new();
+        if kinds.kinds.get(key) == Some(&MetricKind::Boolean) {
+            styles.push(("true", "true".into(), METRIC_TRUE_COLOR));
+            styles.push(("false", "false".into(), METRIC_FALSE_COLOR));
+        } else {
+            let mut seen: Vec<&str> = Vec::new();
+            for v in &values {
+                if v != NO_VALUE && !seen.contains(&v.as_str()) {
+                    seen.push(v);
+                }
+            }
+            for (i, v) in seen.into_iter().enumerate() {
+                styles.push((v, v.to_string(), ENUM_COLORS[i % ENUM_COLORS.len()]));
+            }
+        }
+        styles.push((NO_VALUE, "no value".into(), NO_VALUE_COLOR));
+        let path = format!("metric_states/{key}");
+        write_states(w, &path, &styles, &frames, &times, values.clone())?;
     }
     Ok(())
 }

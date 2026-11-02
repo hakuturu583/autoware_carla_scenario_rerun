@@ -221,6 +221,16 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     assert np.allclose(distance, [10.0 - 0.2 * i for i in range(40)])
     ttc = [c[0] for c in cells(metrics, "/metrics/crime_ttc_s:Scalars:scalars")]
     assert math.isnan(ttc[0]) and np.allclose(ttc[1:], [3.0, 2.0, 1.0])
+    # A boolean or enum metric is a state timeline, a change wherever it
+    # changed; `(no value)` where it read nothing. Not a series.
+    assert not any(c.startswith(("/metrics/offroad", "/metrics/phase")) for c in metrics.columns)
+    metric_states = read_rrd(out, "/metric_states/**")
+
+    def metric_state(key: str) -> list[tuple[int, str]]:
+        column = f"/metric_states/{key}:StateChange:state"
+        return [(f, c[0]) for f, c in zip(metric_states["frame"], metric_states[column]) if c is not None]
+    assert metric_state("offroad") == [(100, "(no value)"), (101, "false"), (120, "true"), (125, "false")]
+    assert metric_state("phase") == [(100, "cruise"), (110, "merge"), (130, "stop")]
 
     cond = read_rrd(out, "/conditions/pass/0")
     values = [c[0] for c in cond["/conditions/pass/0:Scalars:scalars"]]
@@ -491,7 +501,8 @@ def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None
     """The blueprint is in the file, active: a chase view on the ego and the
     state timelines of the conditions and the actions, and -- the log has
     plans -- the plan's speed and its series, and -- it has metrics -- the
-    metrics' series; the rest is left to the blueprint panel."""
+    numbers' series and the booleans' and enums' states; the rest is left to
+    the blueprint panel."""
     import subprocess
     import sys
 
@@ -504,7 +515,7 @@ def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None
     assert done.returncode == 0, done.stderr
     text = done.stdout
     assert f'StoreId(Blueprint, "autoware_carla_scenario", "{v2_log.name.split(".")[0]}.blueprint"), make_active: true' in text
-    assert text.count("ViewBlueprint:class_identifier") == 6
+    assert text.count("ViewBlueprint:class_identifier") == 7
     for expected in ("/world/ego/pose@Transform3D", "EyeControls3D:position", "EyeControls3D:look_target"):
         assert expected in text, expected
 
@@ -512,6 +523,30 @@ def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None
 # ---------------------------------------------------------------------------
 # Forward compatibility: fields the schema does not define, nulls
 # ---------------------------------------------------------------------------
+
+
+def test_a_metric_value_of_another_kind_warns(tmp_path: Path, read_rrd) -> None:
+    """A metric's kind is that of its first value but null; a value of
+    another kind is drawn as no value, with a warning."""
+    records = v2_records(ticks=6)
+    for r in records:
+        if r["type"] == "metric":
+            r["values"] = {"offroad": r["frame"] != 102, "lane": 1.0}
+            if r["frame"] >= 103:
+                r["values"].update(offroad=0.5, lane="left")
+    log = write_log(tmp_path / "Mixed.trajectory.jsonl", records)
+    stats = acsr.convert(log, tmp_path / "Mixed.rrd", strict=True)
+    assert stats["metrics"] == 6
+    assert sorted(w.split("`")[1] for w in stats["warnings"]) == ["lane", "offroad"]
+    assert any("`offroad` is a boolean, but 3 of its value(s) are not (the first, a number at frame 103)" in w
+               for w in stats["warnings"])
+    states = read_rrd(tmp_path / "Mixed.rrd", "/metric_states/**")
+    offroad = [(f, c[0]) for f, c in zip(states["frame"], states["/metric_states/offroad:StateChange:state"])
+               if c is not None]
+    assert offroad == [(100, "true"), (102, "false"), (103, "(no value)")]
+    lane = [c[0] for c in read_rrd(tmp_path / "Mixed.rrd", "/metrics/**")["/metrics/lane:Scalars:scalars"]
+            if c is not None]
+    assert lane[:3] == [1.0, 1.0, 1.0] and all(math.isnan(v) for v in lane[3:])
 
 
 def test_unknown_fields_warn_and_convert(tmp_path: Path, caplog, read_rrd) -> None:

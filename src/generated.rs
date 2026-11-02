@@ -968,13 +968,32 @@ pub struct MetricRecord {
     pub t: f64,
     #[serde(rename = "type")]
     pub type_: ::serde_json::Value,
-    ///Each metric computed for the tick, by its key (`metrics.BUILT_IN_METRICS`): its value in the metric's unit, or null where it read nothing or no finite number (a time to collision that never comes).
+    ///Each metric computed for the tick, by its key (`metrics.BUILT_IN_METRICS`): a number in the metric's unit, a boolean (a yes/no metric), or a string (a metric that names one of its states, an enum); null where it read nothing or no finite number (a time to collision that never comes). A metric's values are of one kind, but for null.
     pub values: ::std::collections::HashMap<
         ::std::string::String,
-        ::std::option::Option<f64>,
+        MetricRecordValuesValue,
     >,
     #[serde(flatten)]
     pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///`MetricRecordValuesValue`
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+#[serde(untagged)]
+pub enum MetricRecordValuesValue {
+    Null,
+    Boolean(bool),
+    Number(f64),
+    String(::std::string::String),
+}
+impl ::std::convert::From<bool> for MetricRecordValuesValue {
+    fn from(value: bool) -> Self {
+        Self::Boolean(value)
+    }
+}
+impl ::std::convert::From<f64> for MetricRecordValuesValue {
+    fn from(value: f64) -> Self {
+        Self::Number(value)
+    }
 }
 ///`[dt, x, y, z, yaw]`: seconds after the plan was made, CARLA world position (m), CARLA yaw (degrees).
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
