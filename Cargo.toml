@@ -4,7 +4,7 @@ members = [".", "xtask"]
 
 [package]
 name = "autoware_carla_scenario_rerun"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.96"
 license = "Apache-2.0"
