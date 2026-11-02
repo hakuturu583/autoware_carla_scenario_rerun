@@ -129,8 +129,8 @@ records) has **Metrics** (time series, `metrics/**`) in that column too,
 below the plan's views when there are any; a metric condition's NG frames are
 its lane in **Conditions** (ACS writes them as `condition` records).
 
-`rear_axle` and `turn_indicators` records are read (they are no longer
-unknown types) but not drawn yet.
+`rear_axle` and `turn_indicators` records and a tick's `angular_velocity` are
+read (they are no longer unknown types or fields) but not drawn yet.
 
 Everything else -- speed, control, the verdict, the lights, the logs -- is
 in the recording, to be added from the blueprint panel, which starts open

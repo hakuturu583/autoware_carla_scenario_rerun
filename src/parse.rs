@@ -633,6 +633,8 @@ enum TickKey {
     Actors,
     Control,
     Lights,
+    /// Each ego's angular velocity: parsed, not drawn yet.
+    AngularVelocity,
     Other(String),
 }
 
@@ -660,6 +662,7 @@ impl Visitor<'_> for TickKeySeed {
             "actors" => TickKey::Actors,
             "control" => TickKey::Control,
             "lights" => TickKey::Lights,
+            "angular_velocity" => TickKey::AngularVelocity,
             other => TickKey::Other(other.to_string()),
         })
     }
@@ -715,6 +718,10 @@ impl<'de> Visitor<'de> for TickSeed<'_> {
                 })?,
                 TickKey::Type => {
                     map.next_value::<IgnoredAny>()?;
+                }
+                // A known field (the schema's), not drawn yet.
+                TickKey::AngularVelocity => {
+                    map.next_value::<std::collections::HashMap<g::ActorIdKey, g::Vector3>>()?;
                 }
                 TickKey::Other(name) => {
                     map.next_value::<IgnoredAny>()?;

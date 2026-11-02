@@ -81,6 +81,8 @@ def v2_records(map_path: Path = TEST_MAP, ticks: int = 40) -> list[dict[str, Any
             tick["lights"] = {"9": "Red"}
         if i == 25:
             tick["lights"] = {"9": "Green"}
+        if i >= 30:  # parsed, not drawn yet
+            tick["angular_velocity"] = {"1": [0.0, 0.0, 1.5]}
         records.append(tick)
         if i == 3:  # parsed, not drawn yet
             records.append({"type": "turn_indicators", "frame": frame, "t": t, "states": {"1": "left"}})

@@ -149,7 +149,11 @@ def test_v1_log(v1_log: Path, tmp_path: Path, read_rrd, rrd_columns) -> None:
 
 def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     out = tmp_path / "v2.rrd"
-    stats = acsr.convert(v2_log, out)
+    # Strict: every record and field the log has is in the schema (the ones
+    # not drawn yet -- `rear_axle`, `turn_indicators`, `tick.angular_velocity`
+    # -- included).
+    stats = acsr.convert(v2_log, out, strict=True)
+    assert stats["unknown_types"] == {} and stats["unknown_fields"] == {}
     assert stats["schema_version"] == 2
     assert stats["ticks"] == 40
     assert stats["actors"] == 3
