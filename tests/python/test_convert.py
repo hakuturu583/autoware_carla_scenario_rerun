@@ -155,7 +155,8 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     assert stats["actors"] == 3
     assert stats["markers"] == 5
     assert stats["plans"] == 4
-    assert stats["conditions"] == 3
+    assert stats["metrics"] == 40
+    assert stats["conditions"] == 5
     assert stats["actions"] == 6
     assert stats["events"] == 7
     assert stats["has_result"]
@@ -208,6 +209,14 @@ def test_v2_log(v2_log: Path, tmp_path: Path, read_rrd) -> None:
     assert target == [10.0, 10.0, 5.0, 5.0]
     nan = [c[0] for c in cells(series, "/plan/debug/nan:Scalars:scalars")]
     assert len(nan) == 1 and math.isnan(nan[0])
+
+    # The metrics computed once the run was over: one series each, over the
+    # frames it was computed for; NaN where it read nothing.
+    metrics = read_rrd(out, "/metrics/**")
+    distance = [c[0] for c in cells(metrics, "/metrics/min_distance_to_obstacle_m:Scalars:scalars")]
+    assert np.allclose(distance, [10.0 - 0.2 * i for i in range(40)])
+    ttc = [c[0] for c in cells(metrics, "/metrics/crime_ttc_s:Scalars:scalars")]
+    assert math.isnan(ttc[0]) and np.allclose(ttc[1:], [3.0, 2.0, 1.0])
 
     cond = read_rrd(out, "/conditions/pass/0")
     values = [c[0] for c in cond["/conditions/pass/0:Scalars:scalars"]]
@@ -477,8 +486,8 @@ def test_rerun_verifies_the_recordings(v1_log: Path, v2_log: Path, tmp_path: Pat
 def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None:
     """The blueprint is in the file, active: a chase view on the ego and the
     state timelines of the conditions and the actions, and -- the log has
-    plans -- the plan's speed and its series; the rest is left to the
-    blueprint panel."""
+    plans -- the plan's speed and its series, and -- it has metrics -- the
+    metrics' series; the rest is left to the blueprint panel."""
     import subprocess
     import sys
 
@@ -491,7 +500,7 @@ def test_recordings_open_with_their_layout(v2_log: Path, tmp_path: Path) -> None
     assert done.returncode == 0, done.stderr
     text = done.stdout
     assert f'StoreId(Blueprint, "autoware_carla_scenario", "{v2_log.name.split(".")[0]}.blueprint"), make_active: true' in text
-    assert text.count("ViewBlueprint:class_identifier") == 5
+    assert text.count("ViewBlueprint:class_identifier") == 6
     for expected in ("/world/ego/pose@Transform3D", "EyeControls3D:position", "EyeControls3D:look_target"):
         assert expected in text, expected
 

@@ -20,6 +20,7 @@
 //! | `plan/inference_seconds`, `plan/debug/<name>` | how long the policy took, and the diagnostics it surfaced, per plan (`Scalars`) |
 //! | `scenario/turn_indicator` | the turn indicators the policy commanded (`StateChange`; a plan with no command leaves them) |
 //! | `ego/speed_mps`, `ego/control` | the ego's speed, and throttle/steer/brake (`Scalars`) |
+//! | `metrics/<key>` | each metric the run computed once it was over, per frame it was computed for (`metric` records, `Scalars`; NaN where it read nothing) |
 //! | `world/traffic_lights` | the light heads, wireframe boxes (static) |
 //! | `world/traffic_lights/bulbs` | three bulbs per head (red, yellow, green), the one the state names lit |
 //! | `world/traffic_lights/tags` | each light's Lanelet2 id (else `carla <id>`) and state, written above it in the light's colour |
@@ -177,6 +178,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     let mut lights: Vec<&g::TrafficLightRecord> = Vec::new();
     let mut markers: Vec<&g::MarkersRecord> = Vec::new();
     let mut plans: Vec<&g::PlanRecord> = Vec::new();
+    let mut metrics: Vec<&g::MetricRecord> = Vec::new();
     let mut gone: Vec<&g::ActorGoneRecord> = Vec::new();
     let mut conditions: BTreeMap<(String, u64), Vec<&g::ConditionRecord>> = BTreeMap::new();
     let mut actions: BTreeMap<(String, u64), Vec<&g::ActionRecord>> = BTreeMap::new();
@@ -197,6 +199,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
             Record::ActorGone(r) => gone.push(r),
             Record::Markers(r) => markers.push(r),
             Record::Plan(r) => plans.push(r),
+            Record::Metric(r) => metrics.push(r),
             Record::Condition(r) => {
                 let role = match r.role {
                     g::ConditionRecordRole::Pass => "pass",
@@ -220,6 +223,8 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
             | Record::Spawn(_)
             | Record::Despawn(_) => events.push(&located.record),
             Record::Result(r) => result = Some(r),
+            // Parsed, not drawn yet.
+            Record::RearAxle(_) | Record::TurnIndicators(_) => {}
         }
     }
     let result = result.or(inputs.result);
@@ -233,6 +238,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
         inputs.recording_id,
         ego.is_some(),
         !plans.is_empty(),
+        !metrics.is_empty(),
     )?;
     write_actors(&mut w, ticks, &actors, &gone)?;
     if let Some(ego) = ego {
@@ -247,6 +253,7 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
         .filter(|m| m.polylines.is_empty())
         .collect();
     write_plans(&mut w, &plans, &cleared)?;
+    write_metrics(&mut w, &metrics)?;
     write_conditions(&mut w, ticks, &conditions)?;
     if let Some(result) = result {
         write_result(&mut w, ticks, result)?;
@@ -1246,6 +1253,31 @@ fn write_plans(
         &times,
         states,
     )
+}
+
+/// The `metric` records: one series per metric, `metrics/<key>`, over the
+/// frames it was computed for, in frame order; NaN where it read nothing.
+fn write_metrics(w: &mut Writer, metrics: &[&g::MetricRecord]) -> RrResult<()> {
+    let mut sorted: Vec<&g::MetricRecord> = metrics.to_vec();
+    sorted.sort_by_key(|m| m.frame.0);
+    let mut series: BTreeMap<&str, Series> = BTreeMap::new();
+    for m in &sorted {
+        for (key, value) in &m.values {
+            let s = series.entry(key.as_str()).or_default();
+            s.frames.push(m.frame.0);
+            s.times.push(m.t);
+            s.values.push(value.unwrap_or(f64::NAN));
+        }
+    }
+    for (key, s) in &series {
+        let path = format!("metrics/{key}");
+        w.fixed(&path, &SeriesLines::new().with_names([*key]))?;
+        let columns = Scalars::new(s.values.iter().copied())
+            .columns_of_unit_batches()
+            .map_err(err)?;
+        w.columns(&path, &s.frames, &s.times, columns)?;
+    }
+    Ok(())
 }
 
 fn write_conditions(

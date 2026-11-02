@@ -38,8 +38,10 @@ pub const HANDLED_TYPES: &[&str] = &[
     "traffic_light",
     "warmup",
     "actor",
+    "rear_axle",
     "actor_gone",
     "tick",
+    "turn_indicators",
     "markers",
     "plan",
     "condition",
@@ -50,6 +52,7 @@ pub const HANDLED_TYPES: &[&str] = &[
     "walker_fallen",
     "spawn",
     "despawn",
+    "metric",
     "result",
 ];
 
@@ -185,7 +188,11 @@ pub enum Record {
     TrafficLight(g::TrafficLightRecord),
     Warmup(g::WarmupRecord),
     Actor(g::ActorRecord),
+    /// Parsed, not drawn yet.
+    RearAxle(g::RearAxleRecord),
     ActorGone(g::ActorGoneRecord),
+    /// Parsed, not drawn yet.
+    TurnIndicators(g::TurnIndicatorsRecord),
     Markers(g::MarkersRecord),
     Plan(g::PlanRecord),
     Condition(g::ConditionRecord),
@@ -196,6 +203,7 @@ pub enum Record {
     WalkerFallen(g::WalkerFallenRecord),
     Spawn(g::SpawnRecord),
     Despawn(g::DespawnRecord),
+    Metric(g::MetricRecord),
     Result(g::ResultRecord),
 }
 
@@ -468,6 +476,9 @@ impl Record {
             Record::WalkerFallen(r) => r.unknown_fields("walker_fallen", out),
             Record::Spawn(r) => r.unknown_fields("spawn", out),
             Record::Despawn(r) => r.unknown_fields("despawn", out),
+            Record::RearAxle(r) => r.unknown_fields("rear_axle", out),
+            Record::TurnIndicators(r) => r.unknown_fields("turn_indicators", out),
+            Record::Metric(r) => r.unknown_fields("metric", out),
             Record::Result(r) => r.unknown_fields("result", out),
         }
     }
@@ -550,6 +561,11 @@ fn parse_chunk(chunk: &[u8], options: &ParseOptions) -> Result<ChunkOut, LineErr
             b"walker_fallen" => Some(record(parser, line, &mut scratch).map(Record::WalkerFallen)),
             b"spawn" => Some(record(parser, line, &mut scratch).map(Record::Spawn)),
             b"despawn" => Some(record(parser, line, &mut scratch).map(Record::Despawn)),
+            b"rear_axle" => Some(record(parser, line, &mut scratch).map(Record::RearAxle)),
+            b"turn_indicators" => {
+                Some(record(parser, line, &mut scratch).map(Record::TurnIndicators))
+            }
+            b"metric" => Some(record(parser, line, &mut scratch).map(Record::Metric)),
             b"result" => Some(record(parser, line, &mut scratch).map(Record::Result)),
             other => {
                 // Skipped, but only if it is JSON: a broken line is an error

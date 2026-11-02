@@ -959,6 +959,23 @@ pub struct MarkersRecord {
     #[serde(flatten)]
     pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
+///The metrics computed for one tick once the run was over (`metric_batch`), for a run judged on a `MetricCondition`: written after the run's last tick, in the order of their frames, together with each metric condition's `condition` records (whether its metric was NG). The metrics read every tick and those read every 0.1 s (CriMe's and CommonRoad-Reach's) share the records of the frames both were read on. Added in version 2, which a reader of version 2 that does not know it skips.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct MetricRecord {
+    ///The CARLA frame of the tick it was computed for.
+    pub frame: SafeUInt,
+    ///That tick's simulated time, seconds since the scenario clock started.
+    pub t: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    ///Each metric computed for the tick, by its key (`metrics.BUILT_IN_METRICS`): its value in the metric's unit, or null where it read nothing or no finite number (a time to collision that never comes).
+    pub values: ::std::collections::HashMap<
+        ::std::string::String,
+        ::std::option::Option<f64>,
+    >,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
 ///`[dt, x, y, z, yaw]`: seconds after the plan was made, CARLA world position (m), CARLA yaw (degrees).
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(transparent)]
@@ -1023,6 +1040,17 @@ pub struct Polyline {
     pub points: ::std::vec::Vec<Vector3>,
     ///Its thickness, metres.
     pub thickness: f64,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///Where an ego's rear axle -- Autoware's `base_link`, the driver policy's rig origin -- is on it, written right after its `actor` record (version 2, added after the records listed in `schema_version`). A reader that converts the ego's pose to its `base_link` takes it from here rather than guessing it from the box.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct RearAxleRecord {
+    pub id: ActorId,
+    ///The rear axle's offset from the actor origin along the actor's x axis, metres; negative when it is behind the origin. As the run took it: the driver policy's rig origin for an ego a driver policy drives, else from the vehicle's wheels, else half its bounding box behind the origin.
+    pub offset: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
     #[serde(flatten)]
     pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
 }
@@ -1149,6 +1177,9 @@ impl ::std::convert::From<(f64, f64, f64, f64)> for StopWaypoint {
 pub struct TickRecord {
     ///Every recorded vehicle and walker in the snapshot.
     pub actors: ::std::vec::Vec<ActorState>,
+    ///Each ego's angular velocity [wx, wy, wz] in CARLA's world axes, degrees per second, as CARLA reports it, keyed by its actor id as a decimal string (version 2, added after the records listed in `schema_version`). A reader that moves the ego's velocity from its actor origin to its `base_link` adds the lever arm w x r with it. Absent when there is no ego, and in a file written before it was recorded.
+    #[serde(default, skip_serializing_if = ":: std :: collections :: HashMap::is_empty")]
+    pub angular_velocity: ::std::collections::HashMap<ActorIdKey, Vector3>,
     ///The last control applied to each ego, keyed by its actor id as a decimal string. Empty when there is no ego.
     pub control: ::std::collections::HashMap<ActorIdKey, VehicleControl>,
     ///The CARLA frame number of the snapshot, a uint64 in LibCarla.
@@ -1242,7 +1273,7 @@ impl ::std::convert::TryFrom<::std::string::String> for TrafficLightState {
         value.parse()
     }
 }
-///One line of a run's `{stem}.trajectory.jsonl`, written by `autoware_carla_scenario.trajectory_recorder.TrajectoryRecorder`, format version 2: one of eighteen records, told apart by `type`. Units, frames and the order of a file: docs/trajectory_log.md.
+///One line of a run's `{stem}.trajectory.jsonl`, written by `autoware_carla_scenario.trajectory_recorder.TrajectoryRecorder`, format version 2: one of twenty-one records, told apart by `type`. Units, frames and the order of a file: docs/trajectory_log.md.
 #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
 #[serde(untagged)]
 pub enum TrajectoryRecord {
@@ -1251,8 +1282,10 @@ pub enum TrajectoryRecord {
     TrafficLightRecord(TrafficLightRecord),
     WarmupRecord(WarmupRecord),
     ActorRecord(ActorRecord),
+    RearAxleRecord(RearAxleRecord),
     ActorGoneRecord(ActorGoneRecord),
     TickRecord(TickRecord),
+    TurnIndicatorsRecord(TurnIndicatorsRecord),
     MarkersRecord(MarkersRecord),
     PlanRecord(PlanRecord),
     ConditionRecord(ConditionRecord),
@@ -1263,6 +1296,7 @@ pub enum TrajectoryRecord {
     WalkerFallenRecord(WalkerFallenRecord),
     SpawnRecord(SpawnRecord),
     DespawnRecord(DespawnRecord),
+    MetricRecord(MetricRecord),
     ResultRecord(ResultRecord),
 }
 impl ::std::convert::From<WorldRecord> for TrajectoryRecord {
@@ -1290,6 +1324,11 @@ impl ::std::convert::From<ActorRecord> for TrajectoryRecord {
         Self::ActorRecord(value)
     }
 }
+impl ::std::convert::From<RearAxleRecord> for TrajectoryRecord {
+    fn from(value: RearAxleRecord) -> Self {
+        Self::RearAxleRecord(value)
+    }
+}
 impl ::std::convert::From<ActorGoneRecord> for TrajectoryRecord {
     fn from(value: ActorGoneRecord) -> Self {
         Self::ActorGoneRecord(value)
@@ -1298,6 +1337,11 @@ impl ::std::convert::From<ActorGoneRecord> for TrajectoryRecord {
 impl ::std::convert::From<TickRecord> for TrajectoryRecord {
     fn from(value: TickRecord) -> Self {
         Self::TickRecord(value)
+    }
+}
+impl ::std::convert::From<TurnIndicatorsRecord> for TrajectoryRecord {
+    fn from(value: TurnIndicatorsRecord) -> Self {
+        Self::TurnIndicatorsRecord(value)
     }
 }
 impl ::std::convert::From<MarkersRecord> for TrajectoryRecord {
@@ -1350,9 +1394,91 @@ impl ::std::convert::From<DespawnRecord> for TrajectoryRecord {
         Self::DespawnRecord(value)
     }
 }
+impl ::std::convert::From<MetricRecord> for TrajectoryRecord {
+    fn from(value: MetricRecord) -> Self {
+        Self::MetricRecord(value)
+    }
+}
 impl ::std::convert::From<ResultRecord> for TrajectoryRecord {
     fn from(value: ResultRecord) -> Self {
         Self::ResultRecord(value)
+    }
+}
+///The turn indicators of the recorded vehicles that changed on a tick (every vehicle's on the first tick it is in), written right after that tick's record (version 2, added after the records listed in `schema_version`). A vehicle's indicators hold until the next `turn_indicators` record that names it; a walker has none.
+#[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, PartialEq)]
+pub struct TurnIndicatorsRecord {
+    ///The CARLA frame of the tick it belongs to: the `frame` of a tick record.
+    pub frame: SafeUInt,
+    ///What each vehicle's turn indicators show, by actor id: `off`, `left`, `right`, or `hazard` (both, as hazard lights show them) -- the blinker bits of its CARLA light state.
+    pub states: ::std::collections::HashMap<ActorIdKey, TurnIndicatorsRecordStatesValue>,
+    ///That tick's simulated time, seconds since the scenario clock started.
+    pub t: f64,
+    #[serde(rename = "type")]
+    pub type_: ::serde_json::Value,
+    #[serde(flatten)]
+    pub extra: ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+}
+///`TurnIndicatorsRecordStatesValue`
+#[derive(
+    ::serde::Deserialize,
+    ::serde::Serialize,
+    Clone,
+    Copy,
+    Debug,
+    Eq,
+    Hash,
+    Ord,
+    PartialEq,
+    PartialOrd
+)]
+pub enum TurnIndicatorsRecordStatesValue {
+    #[serde(rename = "off")]
+    Off,
+    #[serde(rename = "left")]
+    Left,
+    #[serde(rename = "right")]
+    Right,
+    #[serde(rename = "hazard")]
+    Hazard,
+}
+impl ::std::fmt::Display for TurnIndicatorsRecordStatesValue {
+    fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+        match *self {
+            Self::Off => f.write_str("off"),
+            Self::Left => f.write_str("left"),
+            Self::Right => f.write_str("right"),
+            Self::Hazard => f.write_str("hazard"),
+        }
+    }
+}
+impl ::std::str::FromStr for TurnIndicatorsRecordStatesValue {
+    type Err = self::error::ConversionError;
+    fn from_str(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        match value {
+            "off" => Ok(Self::Off),
+            "left" => Ok(Self::Left),
+            "right" => Ok(Self::Right),
+            "hazard" => Ok(Self::Hazard),
+            _ => Err("invalid value".into()),
+        }
+    }
+}
+impl ::std::convert::TryFrom<&str> for TurnIndicatorsRecordStatesValue {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: &str,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
+    }
+}
+impl ::std::convert::TryFrom<::std::string::String> for TurnIndicatorsRecordStatesValue {
+    type Error = self::error::ConversionError;
+    fn try_from(
+        value: ::std::string::String,
+    ) -> ::std::result::Result<Self, self::error::ConversionError> {
+        value.parse()
     }
 }
 ///A non-negative integer of up to 64 bits.
@@ -1669,8 +1795,10 @@ pub const RECORD_TYPES: &[(&str, &str)] = &[
     ("traffic_light", "TrafficLightRecord"),
     ("warmup", "WarmupRecord"),
     ("actor", "ActorRecord"),
+    ("rear_axle", "RearAxleRecord"),
     ("actor_gone", "ActorGoneRecord"),
     ("tick", "TickRecord"),
+    ("turn_indicators", "TurnIndicatorsRecord"),
     ("markers", "MarkersRecord"),
     ("plan", "PlanRecord"),
     ("condition", "ConditionRecord"),
@@ -1681,6 +1809,7 @@ pub const RECORD_TYPES: &[(&str, &str)] = &[
     ("walker_fallen", "WalkerFallenRecord"),
     ("spawn", "SpawnRecord"),
     ("despawn", "DespawnRecord"),
+    ("metric", "MetricRecord"),
     ("result", "ResultRecord"),
 ];
 /// The format version the schema describes (`x-schema-version`).
@@ -1784,6 +1913,13 @@ impl UnknownFields for MarkersRecord {
         self.polylines.unknown_fields(&format!("{path}.polylines"), out);
     }
 }
+impl UnknownFields for MetricRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
 impl UnknownFields for PlanRecord {
     fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
         for key in self.extra.keys() {
@@ -1792,6 +1928,13 @@ impl UnknownFields for PlanRecord {
     }
 }
 impl UnknownFields for Polyline {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for RearAxleRecord {
     fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
         for key in self.extra.keys() {
             out(format!("{path}.{key}"));
@@ -1821,6 +1964,13 @@ impl UnknownFields for TickRecord {
     }
 }
 impl UnknownFields for TrafficLightRecord {
+    fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
+        for key in self.extra.keys() {
+            out(format!("{path}.{key}"));
+        }
+    }
+}
+impl UnknownFields for TurnIndicatorsRecord {
     fn unknown_fields(&self, path: &str, out: &mut dyn FnMut(String)) {
         for key in self.extra.keys() {
             out(format!("{path}.{key}"));

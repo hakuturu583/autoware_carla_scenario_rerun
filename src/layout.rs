@@ -16,6 +16,10 @@
 //! | `Plan speed` (2D) | `plan_profile/speed`: the current plan's speed against its time ahead, and the previous plan's |
 //! | `Plan` (time series) | `plan/**`: the policy's inference time and diagnostics |
 //!
+//! A run with metrics (`metric` records) has a `Metrics` time series view,
+//! `metrics/**`, in that column too, below the plan's views when there are
+//! any.
+//!
 //! The blueprint is written with the blueprint archetypes directly: the Rust
 //! SDK's `Spatial3DView` cannot set the eye.
 
@@ -116,13 +120,15 @@ impl Builder {
 }
 
 /// Sends the layout into `rec`, active at once. `chase`: there is an ego to
-/// follow (`EGO_POSE` is logged); `plans`: a driver policy's plans are.
+/// follow (`EGO_POSE` is logged); `plans`: a driver policy's plans are;
+/// `metrics`: the metrics the run computed are.
 pub fn send(
     rec: &RecordingStream,
     application_id: &'static str,
     recording_id: &str,
     chase: bool,
     plans: bool,
+    metrics: bool,
 ) -> BpResult<()> {
     let (bp, storage) = RecordingStreamBuilder::new(application_id)
         .recording_id(format!("{recording_id}.blueprint"))
@@ -175,14 +181,21 @@ pub fn send(
         &[scene, conditions, actions],
         &[3.0, 1.0, 1.0],
     )?;
-    let root = if plans {
-        let speed = b.view("2D", "Plan speed", "/plan_profile", &["$origin/**"])?;
-        let series = b.view("TimeSeries", "Plan", "/plan", &["$origin/**"])?;
-        let (_, side) = b.container(ContainerKind::Vertical, &[speed, series], &[1.0, 1.0])?;
+    let mut side_views = Vec::new();
+    if plans {
+        side_views.push(b.view("2D", "Plan speed", "/plan_profile", &["$origin/**"])?);
+        side_views.push(b.view("TimeSeries", "Plan", "/plan", &["$origin/**"])?);
+    }
+    if metrics {
+        side_views.push(b.view("TimeSeries", "Metrics", "/metrics", &["$origin/**"])?);
+    }
+    let root = if side_views.is_empty() {
+        column
+    } else {
+        let shares = vec![1.0; side_views.len()];
+        let (_, side) = b.container(ContainerKind::Vertical, &side_views, &shares)?;
         b.container(ContainerKind::Horizontal, &[column_path, side], &[2.0, 1.0])?
             .0
-    } else {
-        column
     };
 
     let bp = &b.bp;
