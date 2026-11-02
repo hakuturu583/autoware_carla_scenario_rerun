@@ -37,7 +37,7 @@ Both functions release the GIL for all of their work, so a sweep can hand the
 previous case to a worker thread and go on with the next. Type stubs ship in
 the wheel (`_native.pyi`, `py.typed`); `Stats` is a `TypedDict`: `input`,
 `output`, `schema_version`, `bytes`, `lines`, `ticks`, `actors`, `actor_rows`,
-`traffic_lights`, `markers`, `plans`, `conditions`, `actions`, `events`, `has_result`, `map`, `map_cached`,
+`traffic_lights`, `markers`, `plans`, `metrics`, `conditions`, `actions`, `events`, `has_result`, `map`, `map_cached`,
 `unknown_types` (`{type: lines}`), `unknown_first_lines`, `unknown_fields`
 (`{record.field: lines}`), `unknown_field_first_lines`, `null_numbers`, `warnings`,
 `rrd_bytes`, and the seconds spent parsing, reading the map and writing.
@@ -94,6 +94,8 @@ clock, the log's `t`). Coordinates are CARLA's world frame with `y` flipped
 | `plan/inference_seconds`, `plan/debug/<name>` | how long the policy took to plan, and each diagnostic it surfaced with its plans (`Scalars`) |
 | `scenario/turn_indicator` | the turn indicators the policy commanded (`off`, `left`, `right`), when a command changes them |
 | `ego/speed_mps`, `ego/control` | speed, and throttle / steer / brake (`Scalars`) |
+| `metrics/<key>` | each numeric metric the run computed once it was over (`metric` records: ACS's AlpaSim, CriMe and CommonRoad-Reach metrics), over the frames it was computed for (`Scalars`; NaN where it read nothing) |
+| `metric_states/<key>` | each boolean or enum (string) metric, as states wherever it changed (`StateChange`; `(no value)` where it read nothing). A metric's kind is that of its first value but null; a value of another kind is drawn as no value, with a warning |
 | `world/traffic_lights` | the light heads, as wireframe boxes |
 | `world/traffic_lights/bulbs` | three bulbs per head, red / yellow / green top to bottom: the one the light's state names lit, the others dim |
 | `world/traffic_lights/tags` | each light's Lanelet2 id and state (`1234 Red`; `carla 77 Red` for a light the map has no element for), written above it in the light's colour |
@@ -123,7 +125,15 @@ A recording carries its blueprint, active when it opens, with three views:
 A run with a driver policy's plans (`plan` records) gets a second column, a
 third of the width: **Plan speed** (2D, `plan_profile/speed`: the current
 plan's speed profile over the previous one's) above **Plan** (time series,
-`plan/**`: inference time and diagnostics).
+`plan/**`: inference time and diagnostics). A run with metrics (`metric`
+records) has them in that column too, below the plan's views when there are
+any: **Metrics** (time series, `metrics/**`) for the numbers and **Metric
+states** (state timeline, `metric_states/**`) for the booleans and enums. A
+metric condition's NG frames are its lane in **Conditions** (ACS writes them
+as `condition` records).
+
+`rear_axle` and `turn_indicators` records and a tick's `angular_velocity` are
+read (they are no longer unknown types or fields) but not drawn yet.
 
 Everything else -- speed, control, the verdict, the lights, the logs -- is
 in the recording, to be added from the blueprint panel, which starts open

@@ -113,6 +113,9 @@ pub struct Stats {
     pub markers: u64,
     /// A driver policy's plans (`plan` records).
     pub plans: u64,
+    /// Frames the metrics were computed for once the run was over (`metric`
+    /// records).
+    pub metrics: u64,
     pub conditions: u64,
     pub actions: u64,
     /// Scenario events: `adversity`, `waypoint_arrival`, `collision`,
@@ -452,6 +455,16 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
             ),
         ));
     }
+    let kinds = rrd::metric_kinds(parsed.records.iter().filter_map(|l| match &l.record {
+        Record::Metric(m) => Some(m),
+        _ => None,
+    }));
+    for (key, mismatch) in &kinds.mismatched {
+        warnings.push((
+            format!("metric_kinds/{key}"),
+            mismatch.warning(key, kinds.kinds[key]),
+        ));
+    }
     if parsed.lines == 0 {
         warnings.push(("empty".into(), "the trajectory log is empty".into()));
     }
@@ -466,6 +479,7 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
             Record::TrafficLight(_) => stats.traffic_lights += 1,
             Record::Markers(_) => stats.markers += 1,
             Record::Plan(_) => stats.plans += 1,
+            Record::Metric(_) => stats.metrics += 1,
             Record::Condition(_) => stats.conditions += 1,
             Record::Action(_) => stats.actions += 1,
             Record::Adversity(_)

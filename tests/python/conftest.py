@@ -61,6 +61,8 @@ def v2_records(map_path: Path = TEST_MAP, ticks: int = 40) -> list[dict[str, Any
                             "extent": [2.4, 1.0, 0.8], "center": [0.1, 0.0, 0.7]})
             records.append({"type": "actor", "id": 2, "type_id": "vehicle.tesla.model3", "role": "",
                             "extent": [2.3, 1.0, 0.7], "center": [0.0, 0.0, 0.7]})
+            # Parsed, not drawn yet.
+            records.append({"type": "rear_axle", "id": 1, "offset": -1.4})
         if i == 10:
             records.append({"type": "actor", "id": 3, "type_id": "walker.pedestrian.0001", "role": "pedestrian",
                             "extent": [0.3, 0.3, 0.9], "center": [0.0, 0.0, 0.9]})
@@ -79,7 +81,11 @@ def v2_records(map_path: Path = TEST_MAP, ticks: int = 40) -> list[dict[str, Any
             tick["lights"] = {"9": "Red"}
         if i == 25:
             tick["lights"] = {"9": "Green"}
+        if i >= 30:  # parsed, not drawn yet
+            tick["angular_velocity"] = {"1": [0.0, 0.0, 1.5]}
         records.append(tick)
+        if i == 3:  # parsed, not drawn yet
+            records.append({"type": "turn_indicators", "frame": frame, "t": t, "states": {"1": "left"}})
         if i == 5:
             records.append({"type": "markers", "frame": frame, "t": t, "actor": 1, "polylines": [
                 {"points": [[0.0, 2.0, 0.2], [10.0, 2.0, 0.2], [20.0, 3.0, 0.2]], "color": [0, 255, 0],
@@ -149,6 +155,24 @@ def v2_records(map_path: Path = TEST_MAP, ticks: int = 40) -> list[dict[str, Any
         if i == 35:
             records.append({"type": "despawn", "frame": frame, "t": t, "label": "", "entity": "pedestrian",
                             "id": 3, "reason": "fallen"})
+    # The metrics computed once the run was over, after its last tick: a
+    # metric read every tick, one read every 10th (null where it read
+    # nothing), a yes/no one and an enum; then the metric condition's NG
+    # frames.
+    for i in range(ticks):
+        values: dict[str, Any] = {
+            "min_distance_to_obstacle_m": 10.0 - 0.2 * i,
+            "offroad": None if i == 0 else 20 <= i < 25,
+        }
+        if i % 10 == 0:
+            values["crime_ttc_s"] = None if i == 0 else 4.0 - 0.1 * i
+            values["phase"] = ["cruise", "merge", "merge", "stop"][i // 10 % 4]
+        records.append({"type": "metric", "frame": 100 + i, "t": round(0.05 * i, 3), "values": values})
+    if ticks > 20:
+        records.append({"type": "condition", "frame": 100, "t": 0.0, "role": "fail", "index": 1,
+                        "label": "ttc", "satisfied": False})
+        records.append({"type": "condition", "frame": 120, "t": 1.0, "role": "fail", "index": 1,
+                        "label": "ttc", "satisfied": True})
     records.append({
         "type": "result", "passed": True, "message": "reached the goal", "elapsed_seconds": round(0.05 * (ticks - 1), 3),
         "conditions": [

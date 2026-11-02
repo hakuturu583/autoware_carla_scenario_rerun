@@ -43,6 +43,8 @@ class Stats(TypedDict):
     markers: int
     #: A driver policy's plans (`plan` records).
     plans: int
+    #: Frames the metrics were computed for once the run was over (`metric` records).
+    metrics: int
     conditions: int
     actions: int
     events: int
