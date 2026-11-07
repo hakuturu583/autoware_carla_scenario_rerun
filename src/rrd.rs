@@ -939,10 +939,47 @@ struct Reach {
 impl Reach {
     /// Whether a point in CARLA's frame comes within the radius of the ego's path.
     fn near_path(&self, p: [f64; 3]) -> bool {
-        self.path
-            .iter()
-            .any(|q| on_ground_within(*q, p, self.radius))
+        self.near_segment(p, p)
     }
+
+    /// Whether a segment in CARLA's frame comes within the radius of the ego's
+    /// path, though neither of its ends may.
+    fn near_segment(&self, a: [f64; 3], b: [f64; 3]) -> bool {
+        match self.path.as_slice() {
+            [] => false,
+            [only] => segments_distance(a, b, *only, *only) <= self.radius,
+            path => path
+                .windows(2)
+                .any(|q| segments_distance(a, b, q[0], q[1]) <= self.radius),
+        }
+    }
+}
+
+/// The distance on the ground from a point to a segment.
+fn point_segment_distance(p: [f64; 3], a: [f64; 3], b: [f64; 3]) -> f64 {
+    let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+    let length2 = dx * dx + dy * dy;
+    let s = if length2 > 0.0 {
+        (((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / length2).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    (p[0] - a[0] - s * dx).hypot(p[1] - a[1] - s * dy)
+}
+
+/// The distance on the ground between two segments: nothing where they cross,
+/// else the least from an end of one to the other.
+fn segments_distance(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> f64 {
+    let side = |p: [f64; 3], q: [f64; 3], r: [f64; 3]| {
+        (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0])
+    };
+    if side(a, b, c) * side(a, b, d) < 0.0 && side(c, d, a) * side(c, d, b) < 0.0 {
+        return 0.0;
+    }
+    point_segment_distance(a, c, d)
+        .min(point_segment_distance(b, c, d))
+        .min(point_segment_distance(c, a, b))
+        .min(point_segment_distance(d, a, b))
 }
 
 /// Whether two points are within `radius` of each other on the ground.
@@ -975,17 +1012,16 @@ fn ego_path(ticks: &Ticks, ego: u32) -> Vec<[f64; 3]> {
     path
 }
 
-/// The runs of `points` that `keep` keeps, each with the point either side of
-/// it, so that a line leaves the area rather than stops short; of two or more.
-fn runs_within<T: Copy>(points: &[T], keep: impl Fn(&T) -> bool) -> Vec<Vec<T>> {
-    let flags: Vec<bool> = points.iter().map(&keep).collect();
+/// The runs of consecutive segments of `points` that `keep` keeps.
+fn runs_within<T: Copy>(points: &[T], keep: impl Fn(&T, &T) -> bool) -> Vec<Vec<T>> {
     let mut runs = Vec::new();
     let mut run: Vec<T> = Vec::new();
-    for i in 0..points.len() {
-        let near =
-            flags[i] || (i > 0 && flags[i - 1]) || flags.get(i + 1).copied().unwrap_or(false);
-        if near {
-            run.push(points[i]);
+    for pair in points.windows(2) {
+        if keep(&pair[0], &pair[1]) {
+            if run.is_empty() {
+                run.push(pair[0]);
+            }
+            run.push(pair[1]);
         } else if !run.is_empty() {
             runs.push(std::mem::take(&mut run));
         }
@@ -993,7 +1029,6 @@ fn runs_within<T: Copy>(points: &[T], keep: impl Fn(&T) -> bool) -> Vec<Vec<T>> 
     if !run.is_empty() {
         runs.push(run);
     }
-    runs.retain(|r| r.len() >= 2);
     runs
 }
 
@@ -1939,8 +1974,9 @@ fn write_map(w: &mut Writer, map: &MapLayer<'_>, reach: Option<&Reach>) -> RrRes
     let [ox, oy, oz] = map.offset;
     let place = |p: &[f64; 3]| [(p[0] - ox) as f32, (p[1] - oy) as f32, (p[2] - oz) as f32];
     // The map is in the recording's frame: y flipped from CARLA's.
-    let keep = |p: &[f64; 3]| {
-        reach.is_none_or(|reach| reach.near_path([p[0] - ox, -(p[1] - oy), p[2] - oz]))
+    let carla = |p: &[f64; 3]| [p[0] - ox, -(p[1] - oy), p[2] - oz];
+    let keep = |a: &[f64; 3], b: &[f64; 3]| {
+        reach.is_none_or(|reach| reach.near_segment(carla(a), carla(b)))
     };
     let g = map.geometry;
     let mut strips: Vec<Vec<[f32; 3]>> = Vec::new();
@@ -1980,7 +2016,7 @@ fn write_map(w: &mut Writer, map: &MapLayer<'_>, reach: Option<&Reach>) -> RrRes
 
 #[cfg(test)]
 mod tests {
-    use super::{condition_lane, light_names, runs_within, MapLayer};
+    use super::{condition_lane, light_names, runs_within, MapLayer, Reach};
     use crate::generated as g;
     use crate::map::{MapGeometry, TrafficLightElement};
 
@@ -1994,13 +2030,31 @@ mod tests {
     }
 
     #[test]
-    fn runs_keep_a_point_either_side_and_drop_lone_points() {
+    fn runs_are_the_consecutive_segments_kept() {
         let points: Vec<i32> = (0..10).collect();
-        // 3 and 4 are in; 8 is in, at the end's neighbour.
-        let runs = runs_within(&points, |p| matches!(*p, 3 | 4 | 8));
-        assert_eq!(runs, vec![vec![2, 3, 4, 5], vec![7, 8, 9]]);
-        assert_eq!(runs_within(&points, |_| false), Vec::<Vec<i32>>::new());
-        assert_eq!(runs_within(&points, |_| true), vec![points.clone()]);
+        let runs = runs_within(&points, |a, _| matches!(*a, 2 | 3 | 7));
+        assert_eq!(runs, vec![vec![2, 3, 4], vec![7, 8]]);
+        assert_eq!(runs_within(&points, |_, _| false), Vec::<Vec<i32>>::new());
+        assert_eq!(runs_within(&points, |_, _| true), vec![points.clone()]);
+    }
+
+    #[test]
+    fn a_long_segment_passing_by_is_near_though_its_ends_are_not() {
+        let reach = Reach {
+            ego: 1,
+            radius: 5.0,
+            path: vec![[0.0, 0.0, 0.0], [2.0, 0.0, 0.0]],
+        };
+        // Across the path, ends 100 m off.
+        assert!(reach.near_segment([1.0, -100.0, 0.0], [1.0, 100.0, 0.0]));
+        // Parallel, 4 m off.
+        assert!(reach.near_segment([-100.0, 4.0, 0.0], [100.0, 4.0, 0.0]));
+        // Parallel, 6 m off.
+        assert!(!reach.near_segment([-100.0, 6.0, 0.0], [100.0, 6.0, 0.0]));
+        // In line, the near end 6 m past the path's end.
+        assert!(!reach.near_segment([8.0, 0.0, 0.0], [100.0, 0.0, 0.0]));
+        assert!(reach.near_path([7.0, 0.0, 0.0]));
+        assert!(!reach.near_path([7.5, 0.0, 0.0]));
     }
 
     #[test]
