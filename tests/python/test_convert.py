@@ -701,3 +701,24 @@ def test_actor_gone_takes_effect_at_its_own_frame(tmp_path: Path, read_rrd) -> N
     assert list(at.loc[119, "/world/actors/events:TextLog:text"]) == ["gone 2 vehicle.tesla.model3"]
     events = [e for c in df["/world/actors/events:TextLog:text"] if c is not None for e in c]
     assert events.count("gone 2 vehicle.tesla.model3") == 1
+
+
+@pytest.mark.parametrize("radius", [-1.0, float("inf"), float("nan")])
+def test_a_draw_radius_that_is_no_distance_is_refused(
+    v2_log: Path, tmp_path: Path, radius: float
+) -> None:
+    with pytest.raises(ValueError):
+        acsr.convert(v2_log, tmp_path / "out.rrd", draw_radius_m=radius)
+
+
+
+def test_a_draw_radius_leaves_out_what_is_far_from_the_ego(
+    v2_log: Path, tmp_path: Path, rrd_columns
+) -> None:
+    near = tmp_path / "near.rrd"
+    acsr.convert(v2_log, near, draw_radius_m=0.0, map_path=TEST_MAP)
+    columns = rrd_columns(near)
+    # The ego is still there; the map and the light are not, nor the other vehicle.
+    assert "/world/actors:Boxes3D:centers" in columns
+    assert "/world/traffic_lights:Boxes3D:centers" not in columns
+    assert "/map/lanelet2/lane_boundaries:LineStrips3D:strips" not in columns

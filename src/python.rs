@@ -106,9 +106,19 @@ fn parser(name: &str) -> PyResult<JsonParser> {
     }
 }
 
+/// Refuses a radius that is not a distance.
+fn check_radius(radius: Option<f64>) -> PyResult<()> {
+    match radius {
+        Some(r) if !r.is_finite() || r < 0.0 => Err(pyo3::exceptions::PyValueError::new_err(
+            format!("draw_radius_m must be a finite distance, not {r}"),
+        )),
+        _ => Ok(()),
+    }
+}
+
 /// Converts one trajectory log; see the stub for the parameters.
 #[pyfunction]
-#[pyo3(signature = (jsonl, out_rrd=None, *, result_json=None, map_dir=None, map_path=None, no_map=false, strict=false, parser="serde_json"))]
+#[pyo3(signature = (jsonl, out_rrd=None, *, result_json=None, map_dir=None, map_path=None, no_map=false, strict=false, parser="serde_json", draw_radius_m=None))]
 #[allow(clippy::too_many_arguments)]
 fn convert<'py>(
     py: Python<'py>,
@@ -120,8 +130,11 @@ fn convert<'py>(
     no_map: bool,
     strict: bool,
     parser: &str,
+    draw_radius_m: Option<f64>,
 ) -> PyResult<Bound<'py, PyDict>> {
+    check_radius(draw_radius_m)?;
     let options = ConvertOptions {
+        draw_radius_m,
         result_json,
         map_dir,
         map_path,
@@ -140,7 +153,7 @@ fn convert<'py>(
 
 /// Converts every trajectory log under a directory; see the stub.
 #[pyfunction]
-#[pyo3(signature = (output_dir, *, jobs=None, out_dir=None, map_dir=None, no_map=false, strict=false, parser="serde_json"))]
+#[pyo3(signature = (output_dir, *, jobs=None, out_dir=None, map_dir=None, no_map=false, strict=false, parser="serde_json", draw_radius_m=None))]
 #[allow(clippy::too_many_arguments)]
 fn convert_dir<'py>(
     py: Python<'py>,
@@ -151,8 +164,11 @@ fn convert_dir<'py>(
     no_map: bool,
     strict: bool,
     parser: &str,
+    draw_radius_m: Option<f64>,
 ) -> PyResult<Bound<'py, PyList>> {
+    check_radius(draw_radius_m)?;
     let options = ConvertOptions {
+        draw_radius_m,
         map_dir,
         no_map,
         strict,

@@ -15,6 +15,13 @@ stats = convert("outputs/CutIn-3.trajectory.jsonl", "CutIn-3.rrd")
 results = convert_dir("outputs/2026-10-18/08-48-12", jobs=8, map_dir="/home/me/autoware_data/maps")
 ```
 
+A run touches little of a large map. `draw_radius_m` writes only what comes near the ego's trajectory, which
+makes the recording smaller and the 3D view easier to read:
+
+```python
+convert("outputs/CutIn-3.trajectory.jsonl", draw_radius_m=100.0)
+```
+
 ```bash
 pip install autoware-carla-scenario-rerun
 pip install 'autoware-carla-scenario-rerun[viewer]'   # + the Rerun viewer of the matching version

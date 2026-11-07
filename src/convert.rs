@@ -93,6 +93,8 @@ pub struct ConvertOptions {
     pub parser: JsonParser,
     /// The parse chunk size, bytes (0: the default).
     pub chunk_bytes: usize,
+    /// Write only what is this near the ego's trajectory, m; `None`: all of it.
+    pub draw_radius_m: Option<f64>,
 }
 
 /// What a conversion did.
@@ -552,6 +554,7 @@ pub fn convert(input: &Path, output: &Path, options: &ConvertOptions) -> Result<
             result: result.as_ref(),
             map: layer,
             warnings: &warnings,
+            draw_radius_m: options.draw_radius_m,
         },
     )
     .map_err(|message| Error::Rerun {
