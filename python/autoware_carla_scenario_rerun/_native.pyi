@@ -96,6 +96,7 @@ def convert(
     no_map: bool = False,
     strict: bool = False,
     parser: _Parser = "serde_json",
+    draw_radius_m: float | None = None,
 ) -> Stats:
     """Convert one ``*.trajectory.jsonl`` into a Rerun recording.
 
@@ -115,6 +116,9 @@ def convert(
             :class:`UnknownFieldError` on a field, the schema does not define,
             instead of skipping it with a warning.
         parser: The JSON parser.
+        draw_radius_m: Write only what comes this near the ego's whole trajectory,
+            m, on the ground: the map, the traffic lights, and other actors at
+            each tick. ``None``, or a log without an ego: all of it.
 
     Raises:
         MalformedLineError: A line is not a record of the schema.
@@ -134,6 +138,7 @@ def convert_dir(
     no_map: bool = False,
     strict: bool = False,
     parser: _Parser = "serde_json",
+    draw_radius_m: float | None = None,
 ) -> list[Stats | Failure]:
     """Convert every ``*.trajectory.jsonl`` under ``output_dir`` (recursively).
 

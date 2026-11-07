@@ -37,7 +37,7 @@
 //! | `map/lanelet2/lane_boundaries`, `map/lanelet2/stop_lines` | the Lanelet2 map (static) |
 //! | `diagnostics/...` | what the conversion skipped or could not find, `TextLog` WARN (static) |
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
 use rerun::{
@@ -113,6 +113,9 @@ pub struct MapLayer<'a> {
     pub offset: [f64; 3],
 }
 
+/// How far apart the points of the ego's path `draw_radius_m` measures from are, m.
+const REACH_PATH_STEP_M: f64 = 2.0;
+
 /// What the recording is made from, besides the parsed file.
 pub struct Inputs<'a> {
     /// The recording id: the run's file stem.
@@ -122,6 +125,8 @@ pub struct Inputs<'a> {
     pub map: Option<MapLayer<'a>>,
     /// Problems to show under `diagnostics` (as `(entity name, text)`).
     pub warnings: &'a [(String, String)],
+    /// Write only what is this near the ego's trajectory, m; `None`: all of it.
+    pub draw_radius_m: Option<f64>,
 }
 
 /// What was written.
@@ -246,12 +251,30 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
         kinds.kinds.values().any(|k| *k == MetricKind::Number),
         kinds.kinds.values().any(|k| *k != MetricKind::Number),
     )?;
-    write_actors(&mut w, ticks, &actors, &gone)?;
+    let reach = ego.zip(inputs.draw_radius_m).map(|(ego, radius)| Reach {
+        ego,
+        radius,
+        path: ego_path(ticks, ego),
+    });
+    let names = light_names(&lights, inputs.map.as_ref());
+    let kept: Option<HashSet<u32>> = reach.as_ref().map(|reach| {
+        lights
+            .iter()
+            .filter(|l| {
+                let (x, y, z) = l.location.0;
+                reach.near_path([x, y, z])
+            })
+            .map(|l| l.id.0)
+            .collect()
+    });
+    if let Some(kept) = &kept {
+        lights.retain(|l| kept.contains(&l.id.0));
+    }
+    write_actors(&mut w, ticks, &actors, &gone, reach.as_ref())?;
     if let Some(ego) = ego {
         write_ego(&mut w, ticks, ego)?;
     }
-    let names = light_names(&lights, inputs.map.as_ref());
-    write_lights(&mut w, ticks, &lights, &names)?;
+    write_lights(&mut w, ticks, &lights, &names, kept.as_ref())?;
     write_markers(&mut w, &markers)?;
     let cleared: Vec<&g::MarkersRecord> = markers
         .iter()
@@ -267,13 +290,13 @@ pub fn write(out: &Path, parsed: &Parsed, inputs: &Inputs<'_>) -> RrResult<Writt
     write_progress(&mut w, ticks, result)?;
     write_condition_states(&mut w, &conditions)?;
     write_action_states(&mut w, &actions)?;
-    write_light_states(&mut w, ticks, &names)?;
+    write_light_states(&mut w, ticks, &names, kept.as_ref())?;
     write_events(
         &mut w,
         events.iter().filter_map(|r| event(r, &actors)).collect(),
     )?;
     if let Some(map) = &inputs.map {
-        write_map(&mut w, map)?;
+        write_map(&mut w, map, reach.as_ref())?;
     }
     for (name, text) in inputs.warnings {
         w.fixed(
@@ -393,7 +416,7 @@ impl ActorRows {
         actors: &HashMap<u32, &g::ActorRecord>,
         (frame, t): (i64, f64),
         rows: impl Iterator<Item = usize>,
-        recorded_gone: &std::collections::HashSet<u32>,
+        recorded_gone: &HashSet<u32>,
     ) {
         let mut ids = Vec::new();
         for r in rows {
@@ -471,6 +494,7 @@ fn write_actors(
     ticks: &Ticks,
     actors: &HashMap<u32, &g::ActorRecord>,
     gone: &[&g::ActorGoneRecord],
+    reach: Option<&Reach>,
 ) -> RrResult<()> {
     let n = ticks.actor_id.len();
     if n == 0 {
@@ -494,7 +518,7 @@ fn write_actors(
         ev_texts: Vec::new(),
         previous: Vec::new(),
     };
-    let recorded_gone: std::collections::HashSet<u32> = gone.iter().map(|g| g.id.0).collect();
+    let recorded_gone: HashSet<u32> = gone.iter().map(|g| g.id.0).collect();
     let mut gone = gone.to_vec();
     gone.sort_by_key(|g| g.frame.0);
     let mut next_gone = 0;
@@ -530,7 +554,11 @@ fn write_actors(
             ticks,
             actors,
             (frame, ticks.t[i]),
-            ticks.actors(i),
+            ticks.actors(i).filter(|r| {
+                reach.is_none_or(|reach| {
+                    ticks.actor_id[*r] == reach.ego || reach.near_path(ticks.position[*r])
+                })
+            }),
             &recorded_gone,
         );
     }
@@ -776,6 +804,7 @@ fn write_lights(
     ticks: &Ticks,
     lights: &[&g::TrafficLightRecord],
     names: &HashMap<u32, String>,
+    kept: Option<&HashSet<u32>>,
 ) -> RrResult<()> {
     if lights.is_empty() {
         return Ok(());
@@ -857,9 +886,15 @@ fn write_lights(
         let mut changed = Vec::new();
         while k < ticks.lights.len() && ticks.lights[k].tick == tick {
             let c = ticks.lights[k];
+            k += 1;
+            if kept.is_some_and(|kept| !kept.contains(&c.id)) {
+                continue;
+            }
             state.insert(c.id, c.state);
             changed.push(format!("{}={:?}", light_name(names, c.id), c.state));
-            k += 1;
+        }
+        if changed.is_empty() {
+            continue;
         }
         frames.push(ticks.frame[tick as usize]);
         times.push(ticks.t[tick as usize]);
@@ -891,6 +926,75 @@ fn write_lights(
         .columns_of_unit_batches()
         .map_err(err)?;
     w.columns("world/traffic_lights/states", &frames, &times, columns)
+}
+
+/// What `draw_radius_m` keeps: what comes this near the ego's whole trajectory.
+struct Reach {
+    ego: u32,
+    radius: f64,
+    /// Where the ego has been, CARLA's frame, points [`REACH_PATH_STEP_M`] apart.
+    path: Vec<[f64; 3]>,
+}
+
+impl Reach {
+    /// Whether a point in CARLA's frame comes within the radius of the ego's path.
+    fn near_path(&self, p: [f64; 3]) -> bool {
+        self.path
+            .iter()
+            .any(|q| on_ground_within(*q, p, self.radius))
+    }
+}
+
+/// Whether two points are within `radius` of each other on the ground.
+fn on_ground_within(a: [f64; 3], b: [f64; 3], radius: f64) -> bool {
+    (a[0] - b[0]).hypot(a[1] - b[1]) <= radius
+}
+
+/// The ego's path, thinned: a radius is far longer than the step.
+fn ego_path(ticks: &Ticks, ego: u32) -> Vec<[f64; 3]> {
+    let mut path: Vec<[f64; 3]> = Vec::new();
+    let mut last = None;
+    for i in 0..ticks.len() {
+        for r in ticks.actors(i) {
+            if ticks.actor_id[r] != ego {
+                continue;
+            }
+            let p = ticks.position[r];
+            last = Some(p);
+            if path
+                .last()
+                .is_none_or(|q| !on_ground_within(*q, p, REACH_PATH_STEP_M))
+            {
+                path.push(p);
+            }
+        }
+    }
+    if let Some(p) = last {
+        path.push(p);
+    }
+    path
+}
+
+/// The runs of `points` that `keep` keeps, each with the point either side of
+/// it, so that a line leaves the area rather than stops short; of two or more.
+fn runs_within<T: Copy>(points: &[T], keep: impl Fn(&T) -> bool) -> Vec<Vec<T>> {
+    let flags: Vec<bool> = points.iter().map(&keep).collect();
+    let mut runs = Vec::new();
+    let mut run: Vec<T> = Vec::new();
+    for i in 0..points.len() {
+        let near =
+            flags[i] || (i > 0 && flags[i - 1]) || flags.get(i + 1).copied().unwrap_or(false);
+        if near {
+            run.push(points[i]);
+        } else if !run.is_empty() {
+            runs.push(std::mem::take(&mut run));
+        }
+    }
+    if !run.is_empty() {
+        runs.push(run);
+    }
+    runs.retain(|r| r.len() >= 2);
+    runs
 }
 
 fn write_markers(w: &mut Writer, markers: &[&g::MarkersRecord]) -> RrResult<()> {
@@ -1781,10 +1885,18 @@ fn write_condition_states(
 }
 
 /// Each traffic light's state, from the ticks that change one.
-fn write_light_states(w: &mut Writer, ticks: &Ticks, names: &HashMap<u32, String>) -> RrResult<()> {
+fn write_light_states(
+    w: &mut Writer,
+    ticks: &Ticks,
+    names: &HashMap<u32, String>,
+    kept: Option<&HashSet<u32>>,
+) -> RrResult<()> {
     type Lane = (Vec<i64>, Vec<f64>, Vec<String>);
     let mut lanes: BTreeMap<u32, Lane> = BTreeMap::new();
     for c in &ticks.lights {
+        if kept.is_some_and(|kept| !kept.contains(&c.id)) {
+            continue;
+        }
         let (frames, times, states) = lanes.entry(c.id).or_default();
         frames.push(ticks.frame[c.tick as usize]);
         times.push(ticks.t[c.tick as usize]);
@@ -1823,24 +1935,25 @@ fn write_light_states(w: &mut Writer, ticks: &Ticks, names: &HashMap<u32, String
     Ok(())
 }
 
-fn write_map(w: &mut Writer, map: &MapLayer<'_>) -> RrResult<()> {
+fn write_map(w: &mut Writer, map: &MapLayer<'_>, reach: Option<&Reach>) -> RrResult<()> {
     let [ox, oy, oz] = map.offset;
     let place = |p: &[f64; 3]| [(p[0] - ox) as f32, (p[1] - oy) as f32, (p[2] - oz) as f32];
+    // The map is in the recording's frame: y flipped from CARLA's.
+    let keep = |p: &[f64; 3]| {
+        reach.is_none_or(|reach| reach.near_path([p[0] - ox, -(p[1] - oy), p[2] - oz]))
+    };
     let g = map.geometry;
-    if !g.lane_boundaries.is_empty() {
-        let strips: Vec<Vec<[f32; 3]>> = g
-            .lane_boundaries
-            .iter()
-            .map(|b| b.points.iter().map(place).collect())
-            .collect();
-        let (colors, radii): (Vec<Color>, Vec<f32>) = g
-            .lane_boundaries
-            .iter()
-            .map(|b| {
-                let (c, r) = boundary_style(b.kind);
-                (rgb(c), r)
-            })
-            .unzip();
+    let mut strips: Vec<Vec<[f32; 3]>> = Vec::new();
+    let (mut colors, mut radii): (Vec<Color>, Vec<f32>) = (Vec::new(), Vec::new());
+    for b in &g.lane_boundaries {
+        let (c, r) = boundary_style(b.kind);
+        for run in runs_within(&b.points, keep) {
+            strips.push(run.iter().map(place).collect());
+            colors.push(rgb(c));
+            radii.push(r);
+        }
+    }
+    if !strips.is_empty() {
         w.fixed(
             "map/lanelet2/lane_boundaries",
             &LineStrips3D::new(strips)
@@ -1848,15 +1961,16 @@ fn write_map(w: &mut Writer, map: &MapLayer<'_>) -> RrResult<()> {
                 .with_radii(radii),
         )?;
     }
-    if !g.stop_lines.is_empty() {
-        let strips: Vec<Vec<[f32; 3]>> = g
-            .stop_lines
-            .iter()
-            .map(|s| s.iter().map(place).collect())
-            .collect();
+    let lines: Vec<Vec<[f32; 3]>> = g
+        .stop_lines
+        .iter()
+        .flat_map(|s| runs_within(s, keep))
+        .map(|run| run.iter().map(place).collect())
+        .collect();
+    if !lines.is_empty() {
         w.fixed(
             "map/lanelet2/stop_lines",
-            &LineStrips3D::new(strips)
+            &LineStrips3D::new(lines)
                 .with_colors([rgb(STOP_LINE_COLOR)])
                 .with_radii([0.15]),
         )?;
@@ -1866,7 +1980,7 @@ fn write_map(w: &mut Writer, map: &MapLayer<'_>) -> RrResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{condition_lane, light_names, MapLayer};
+    use super::{condition_lane, light_names, runs_within, MapLayer};
     use crate::generated as g;
     use crate::map::{MapGeometry, TrafficLightElement};
 
@@ -1877,6 +1991,16 @@ mod tests {
             "stops": [[stop[0], stop[1], stop[2], 0.0]],
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn runs_keep_a_point_either_side_and_drop_lone_points() {
+        let points: Vec<i32> = (0..10).collect();
+        // 3 and 4 are in; 8 is in, at the end's neighbour.
+        let runs = runs_within(&points, |p| matches!(*p, 3 | 4 | 8));
+        assert_eq!(runs, vec![vec![2, 3, 4, 5], vec![7, 8, 9]]);
+        assert_eq!(runs_within(&points, |_| false), Vec::<Vec<i32>>::new());
+        assert_eq!(runs_within(&points, |_| true), vec![points.clone()]);
     }
 
     #[test]
